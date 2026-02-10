@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# Backend (Python)
+# -----------------------------
+backend/venv/
+backend/.env
+backend/__pycache__/
+backend/**/*.pyc
+
+# -----------------------------
+# Frontend (Next.js / Node)
+# -----------------------------
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
