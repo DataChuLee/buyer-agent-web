@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Buyer Agent",
+  title: "Buyer Agent", 
   description: "구매자를 대신해 구매 과정을 수행하는 Agent",
 };
 
