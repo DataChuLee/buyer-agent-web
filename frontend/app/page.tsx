@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import Hero from "@/components/main/hero";
 import ThemeToggle from "@/components/main/theme-toggle";
 import { Indie_Flower } from "next/font/google";
@@ -32,9 +33,12 @@ export default function Home() {
 
           <div className="flex items-center gap-3">
             <ThemeToggle />
-            <button className="rounded-full border border-slate-300/80 bg-white/70 px-5 py-2 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15">
+            <Link
+              href="/auth"
+              className="rounded-full border border-slate-300/80 bg-white/70 px-5 py-2 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+            >
               Get Started
-            </button>
+            </Link>
           </div>
         </div>
       </header>
@@ -50,12 +54,12 @@ export default function Home() {
           compares prices in real time, and helps you buy faster with confidence.
         </p>
         <div className="mt-8 flex items-center gap-3">
-          <button className="rounded-full border border-slate-300/80 bg-white/70 px-6 py-2.5 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15">
-            Get started
-          </button>
-          <button className="rounded-full border border-slate-300/80 bg-transparent px-6 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-white/60 dark:border-white/20 dark:text-slate-200 dark:hover:bg-white/10">
-            Learn More
-          </button>
+          <Link
+            href="/auth"
+            className="rounded-full border border-slate-300/80 bg-white/70 px-6 py-2.5 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+          >
+            Get Started
+          </Link>
         </div>
       </section>
     </Hero>
