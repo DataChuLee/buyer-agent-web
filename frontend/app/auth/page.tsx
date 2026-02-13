@@ -22,15 +22,15 @@ export default function AuthPage() {
       <section className="relative z-10 w-full px-6">
         <div className="mx-auto w-full max-w-md rounded-3xl border border-slate-200/70 bg-white/70 p-8 text-center shadow-2xl backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/60">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-300">
-            One Account
+            Dashboard Access
           </p>
           <h1
             className={`${indieFlower.className} mt-4 text-4xl leading-tight text-slate-900 sm:text-5xl dark:text-white`}
           >
-            Continue with Buyer Agent
+            Sign in to continue
           </h1>
           <p className="mt-4 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-            Sign in once with Google to start faster, smarter purchasing.
+            Use Google once and move directly into your Buyer Agent dashboard.
           </p>
 
           <GoogleAuthActions />

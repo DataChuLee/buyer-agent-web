@@ -1,12 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 
 export default function GoogleAuthActions() {
+  const router = useRouter();
   const { loading, user, isAuthenticated, signInWithGoogle, signOut } = useAuth();
   const [pending, setPending] = useState<"signin" | "signout" | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!loading && isAuthenticated) {
+      router.replace("/dashboard");
+    }
+  }, [isAuthenticated, loading, router]);
 
   const handleSignIn = async () => {
     try {
@@ -47,15 +55,22 @@ export default function GoogleAuthActions() {
     return (
       <div className="mt-8 space-y-3">
         <p className="text-sm text-slate-700 dark:text-slate-200">
-          Signed in as <span className="font-semibold">{user.email}</span>
+          Signed in as <span className="font-semibold">{user.email}</span>. Moving to dashboard...
         </p>
+        <button
+          type="button"
+          onClick={() => router.replace("/dashboard")}
+          className="inline-flex w-full items-center justify-center gap-3 rounded-full border border-slate-300/80 bg-white px-6 py-3 text-sm font-medium text-slate-900 transition hover:bg-slate-50 dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+        >
+          Go to dashboard now
+        </button>
         <button
           type="button"
           onClick={handleSignOut}
           disabled={pending === "signout"}
           className="inline-flex w-full items-center justify-center gap-3 rounded-full border border-slate-300/80 bg-white px-6 py-3 text-sm font-medium text-slate-900 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
         >
-          {pending === "signout" ? "Signing out..." : "Sign out"}
+          {pending === "signout" ? "Signing out..." : "Use another account"}
         </button>
       </div>
     );
@@ -87,7 +102,7 @@ export default function GoogleAuthActions() {
             fill="#EA4335"
           />
         </svg>
-        {pending === "signin" ? "Redirecting..." : "Continue with Google"}
+        {pending === "signin" ? "Redirecting..." : "Continue with Google to Dashboard"}
       </button>
 
       {error ? <p className="mt-3 text-xs text-rose-600">{error}</p> : null}

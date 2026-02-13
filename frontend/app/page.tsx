@@ -34,10 +34,10 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <ThemeToggle />
             <Link
-              href="/auth"
+              href="/dashboard"
               className="rounded-full border border-slate-300/80 bg-white/70 px-5 py-2 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
             >
-              Get Started
+              Open Dashboard
             </Link>
           </div>
         </div>
@@ -55,10 +55,10 @@ export default function Home() {
         </p>
         <div className="mt-8 flex items-center gap-3">
           <Link
-            href="/auth"
+            href="/dashboard"
             className="rounded-full border border-slate-300/80 bg-white/70 px-6 py-2.5 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
           >
-            Get Started
+            Enter Dashboard
           </Link>
         </div>
       </section>
