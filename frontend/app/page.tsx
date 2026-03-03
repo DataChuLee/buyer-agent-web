@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import Hero from "@/components/main/hero";
 import ThemeToggle from "@/components/main/theme-toggle";
@@ -14,10 +13,12 @@ export default function Home() {
     <Hero>
       <header className="absolute left-0 top-0 z-30 w-full">
         <div className="relative flex h-20 w-full items-center justify-between px-3 md:px-6 lg:px-8">
-          <a href="#" className="flex items-center gap-3">
-            <Image src="/buyeragent.png" alt="Buyer Agent logo" width={28} height={28} />
-            <span className="text-sm font-medium text-slate-900 dark:text-white">Buyer Agent</span>
-          </a>
+          <Link
+            href="/"
+            className="inline-flex items-center text-base font-extrabold tracking-wide text-slate-900 transition hover:opacity-80 dark:text-white"
+          >
+            Buyer Agent
+          </Link>
 
           <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-8 text-sm font-medium text-slate-700 md:flex dark:text-slate-200">
             <a href="#features" className="transition hover:text-slate-900 dark:hover:text-white">
@@ -35,9 +36,9 @@ export default function Home() {
             <ThemeToggle />
             <Link
               href="/dashboard"
-              className="rounded-full border border-slate-300/80 bg-white/70 px-5 py-2 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+              className="rounded-full border border-slate-300/80 bg-white/70 px-5 py-2 text-sm font-extrabold text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
             >
-              Open Dashboard
+              Get Started
             </Link>
           </div>
         </div>
@@ -56,9 +57,9 @@ export default function Home() {
         <div className="mt-8 flex items-center gap-3">
           <Link
             href="/dashboard"
-            className="rounded-full border border-slate-300/80 bg-white/70 px-6 py-2.5 text-sm font-medium text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+            className="rounded-full border border-slate-300/80 bg-white/70 px-6 py-2.5 text-sm font-extrabold text-slate-900 backdrop-blur-sm transition hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
           >
-            Enter Dashboard
+            Get Started
           </Link>
         </div>
       </section>
