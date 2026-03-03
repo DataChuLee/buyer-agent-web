@@ -37,19 +37,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let mounted = true;
 
     const init = async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          // If refresh/network fails, clear local auth state and continue unauthenticated.
+          await supabase.auth.signOut({ scope: "local" });
+          if (!mounted) {
+            return;
+          }
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
+        if (!mounted) {
+          return;
+        }
+
+        setSession(data.session);
+        setUser(data.session?.user ?? null);
         setLoading(false);
-        return;
+      } catch {
+        // Network-level failure (e.g. failed to fetch Supabase auth endpoint).
+        await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+        if (!mounted) {
+          return;
+        }
+        setSession(null);
+        setUser(null);
+        setLoading(false);
       }
-
-      if (!mounted) {
-        return;
-      }
-
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      setLoading(false);
     };
 
     void init();
