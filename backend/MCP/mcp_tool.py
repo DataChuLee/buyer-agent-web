@@ -62,18 +62,26 @@ async def get_search_mcp_tools():
     이 context를 벗어나면 세션이 닫히므로 tools를 밖으로 빼서 재사용하면 안 됩니다.
     """
     client = build_mcp_client()
+    tools = []
 
     async with AsyncExitStack() as stack:
-        exa_session = await stack.enter_async_context(client.session("exa"))
-        seq_session = await stack.enter_async_context(
-            client.session("sequential_thinking")
-        )
+        try:
+            exa_session = await stack.enter_async_context(client.session("exa"))
+            exa_tools = await load_mcp_tools(exa_session, server_name="exa")
+            tools.extend(exa_tools)
+        except Exception as e:
+            raise RuntimeError(f"Exa MCP 연결 실패: {e}") from e
 
-        exa_tools = await load_mcp_tools(exa_session, server_name="exa")
-        seq_tools = await load_mcp_tools(seq_session, server_name="sequential_thinking")
+        try:
+            seq_session = await stack.enter_async_context(
+                client.session("sequential_thinking")
+            )
+            seq_tools = await load_mcp_tools(seq_session, server_name="sequential_thinking")
+            tools.extend(seq_tools)
+        except Exception:
+            pass  # sequential_thinking 실패 시 exa만으로 진행
 
-        tools = [*exa_tools, *seq_tools]
-        tools = [tool for tool in tools if tool.name in ALLOWED_TOOL_NAMES]
+        tools = [t for t in tools if t.name in ALLOWED_TOOL_NAMES]
 
         if not tools:
             raise RuntimeError(
