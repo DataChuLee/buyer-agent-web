@@ -7,9 +7,9 @@ from langchain_teddynote import logging
 from pydantic import BaseModel, Field
 
 load_dotenv()
-logging.langsmith("buyer-agent-saas")
+logging.langsmith("buyer-agent-saas_0313")
 
-app = FastAPI(title="Buyer Agent Backend", version="0.1.0")
+app = FastAPI(title="Buyer Agent Fast API", version="0.1.0")
 
 
 def _get_cors_origins() -> list[str]:
@@ -36,8 +36,6 @@ class BuyerAgentRequest(BaseModel):
 
 class BuyerAgentResponse(BaseModel):
     response: str
-    agent: str
-    intent: str
 
 
 @app.get("/health")
@@ -62,18 +60,8 @@ async def run_buyer_agent(payload: BuyerAgentRequest) -> BuyerAgentResponse:
         )
 
     response = str(result.get("response", "")).strip()
-    agent = str(result.get("agent", "")).strip()
-    intent = str(result.get("intent", "")).strip()
 
     if not response:
         raise HTTPException(status_code=500, detail="Agent returned an empty response")
-    if not agent:
-        agent = "orchestrator"
-    if not intent:
-        intent = "unknown"
 
-    return BuyerAgentResponse(
-        response=response,
-        agent=agent,
-        intent=intent,
-    )
+    return BuyerAgentResponse(response=response)
