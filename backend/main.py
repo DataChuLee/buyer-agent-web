@@ -54,12 +54,7 @@ async def run_buyer_agent(payload: BuyerAgentRequest) -> BuyerAgentResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not isinstance(result, dict):
-        raise HTTPException(
-            status_code=500, detail="Orchestrator returned invalid payload"
-        )
-
-    response = str(result.get("response", "")).strip()
+    response = str(result).strip() if result else ""
 
     if not response:
         raise HTTPException(status_code=500, detail="Agent returned an empty response")
