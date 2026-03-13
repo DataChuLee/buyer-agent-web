@@ -11,13 +11,8 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 
 load_dotenv()
-SMITHERY_API_KEY = os.environ["SMITHERY_API_KEY"]
 NAMESPACE = "stingray-C7LG"  # smithery namespace
-CONNECTION_ID = "exa"  # smithery connectionId (?대떦 MCP ID)
-
-SMITHERY_API_KEY = os.environ["SMITHERY_API_KEY"]
-NAMESPACE = "stingray-C7LG"
-CONNECTION_ID = "exa"
+CONNECTION_ID = "exa"  # smithery connectionId (Exa MCP ID)
 
 ALLOWED_TOOL_NAMES = {"web_search_exa", "sequentialthinking"}
 
@@ -37,7 +32,6 @@ def build_mcp_client() -> MultiServerMCPClient:
                 "transport": "streamable_http",
                 "url": f"https://api.smithery.ai/connect/{NAMESPACE}/{CONNECTION_ID}/mcp",
                 "headers": {
-                    "Authorization": f"Bearer {SMITHERY_API_KEY}",
                     "Content-Type": "application/json",
                 },
             },
