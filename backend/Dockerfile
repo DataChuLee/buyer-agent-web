@@ -8,7 +8,9 @@ ENV PORT=8000
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl nodejs npm && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @modelcontextprotocol/server-sequential-thinking
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
