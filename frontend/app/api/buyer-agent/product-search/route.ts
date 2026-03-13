@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await fetch(`${backendUrl}/buyer-agent/buyer_agent_0221`, {
+    const response = await fetch(`${backendUrl}/buyer-agent/buyer_agent_0313`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
