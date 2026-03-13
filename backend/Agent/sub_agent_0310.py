@@ -3,11 +3,10 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from MCP.mcp_tool import search_mcp
+from MCP.mcp_tool import get_search_mcp_tools
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-import os
 from dotenv import load_dotenv
 
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,13 +166,11 @@ async def product_search_agent(query: str):
             ("placeholder", "{agent_scratchpad}"),
         ]
     )
-    tools = [search_mcp]
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    product_search_agent_executor = AgentExecutor(
-        agent=agent, tools=tools, verbose=False
-    )
-    respopnse = await product_search_agent_executor.ainvoke({"input": query})
-    return respopnse["output"]
+    async with get_search_mcp_tools() as tools:
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+        response = await executor.ainvoke({"input": query})
+        return response["output"]
 
 
 async def seller_search_agent(query: str):
@@ -284,9 +281,9 @@ async def seller_search_agent(query: str):
 2. 위메프  
    - 설명: 다양한 축구화 브랜드와 할인 혜택 제공  
    - 링크: [https://www.wemakeprice.com/]  
-3. 네이버 스마트스토어  
+3. 네이버 스마트스토어
    - 설명: 다양한 판매자, 후기 기반 신뢰성 확인 가능  
-   - 링크: [https://smartstore.naver.com/]  
+   - 링크: [https://smartstore.naver.com/]
 (실제 응답 예시는 더 길고 구체적으로 작성되어야 하며, [사이트명], [특징], [URL]은 실제 검색 결과에 맞게 채워야 합니다.)
 
 # Notes
@@ -302,13 +299,11 @@ async def seller_search_agent(query: str):
             ("placeholder", "{agent_scratchpad}"),
         ]
     )
-    tools = [search_mcp]
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    seller_search_agent_executor = AgentExecutor(
-        agent=agent, tools=tools, verbose=False
-    )
-    respopnse = await seller_search_agent_executor.ainvoke({"input": query})
-    return respopnse["output"]
+    async with get_search_mcp_tools() as tools:
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+        response = await executor.ainvoke({"input": query})
+        return response["output"]
 
 
 async def test():

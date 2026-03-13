@@ -1,0 +1,119 @@
+"""
+product_analysis_agent.py
+==========================
+크롤링(crawl_and_index)과 RAG 검색(rag_search)을 도구로 가진 Product Analysis Agent.
+
+흐름:
+  User Query
+      ↓
+  ProductAnalysisAgent
+      ├── crawl_and_index : 판매처 크롤링 → vectorstore upsert
+      └── rag_search      : vectorstore 검색 → Markdown 비교표 생성
+      ↓
+  Final Answer
+"""
+
+import asyncio
+import os
+import sys
+
+from dotenv import load_dotenv
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+load_dotenv()
+
+# ── 경로 등록 ───────────────────────────────────────────────
+AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKEND_DIR = os.path.abspath(os.path.join(AGENT_DIR, ".."))
+TOOLS_DIR = os.path.join(BACKEND_DIR, "Tools")
+
+# Tools/ 를 먼저 추가 → crawl_and_index, rag_search 모두 단순 이름으로 import
+# 같은 sys.modules 키를 공유해야 vectorstore 인스턴스가 하나로 유지됨
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+if BACKEND_DIR not in sys.path:
+    sys.path.append(BACKEND_DIR)
+
+# ── Tools import ────────────────────────────────────────────
+from Tools.rag_search import rag_search
+
+# crawl_and_index.py 내부에서 "from rag_search import vectorstore" 를 하는데,
+# 이때 sys.modules["rag_search"] 가 없으면 새 모듈(새 vectorstore)을 생성해버림.
+# Tools.rag_search 와 rag_search 가 같은 인스턴스를 가리키도록 alias 등록.
+sys.modules["rag_search"] = sys.modules["Tools.rag_search"]
+from Tools.crawl_and_index import crawl_and_index
+
+# ── LLM ─────────────────────────────────────────────────────
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+# ── System Prompt ────────────────────────────────────────────
+SYSTEM_PROMPT = """
+당신은 'Product Analysis Agent'입니다.
+사용자가 원하는 축구화를 찾아 비교표 형태로 제공합니다.
+
+🛠️ 사용 가능한 도구:
+1. crawl_and_index
+   - 지정한 판매처에서 실시간으로 축구화를 크롤링하고 인덱싱합니다.
+   - 지원 판매처 (sellers 파라미터): crazy11, soccerboom, redsoccer, cafostore
+   - 사용자가 한국어 판매처명을 말해도 영문으로 변환하세요:
+     크레이지11 → crazy11 / 사커붐 → soccerboom / 레드사커 → redsoccer / 카포스토어 → cafostore
+
+2. rag_search
+   - 인덱싱된 데이터에서 조건에 맞는 제품을 검색하고 Markdown 비교표를 생성합니다.
+   - 사용자 쿼리 원문을 그대로 전달하세요.
+
+💰 가격 범위 해석 규칙 (crawl_and_index의 min_price / max_price):
+- N만원대       → min_price: N*10000,       max_price: (N+1)*10000 - 1
+  예) 10만원대  → min_price: 100000,        max_price: 199999
+  예) 15만원대  → min_price: 150000,        max_price: 159999
+  예) 20만원대  → min_price: 200000,        max_price: 299999
+- N만원 이상    → min_price: N*10000,       max_price: 999999
+- N만원 이하    → min_price: 0,             max_price: N*10000
+- 가격 언급 없음 → min_price: 0,            max_price: 999999
+
+🔁 수행 절차:
+1️⃣ 사용자 쿼리에서 판매처 / 키워드 / 가격 범위 추출
+2️⃣ crawl_and_index 호출
+3️⃣ rag_search 호출 (사용자 쿼리 원문 그대로 전달)
+4️⃣ 비교표 반환
+
+⚠️ 반드시 crawl_and_index → rag_search 순서로 호출하세요.
+"""
+
+# ── Agent 구성 ───────────────────────────────────────────────
+analysis_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        ("placeholder", "{chat_history}"),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ]
+)
+
+analysis_tools = [crawl_and_index, rag_search]
+analysis_agent = create_tool_calling_agent(llm, analysis_tools, analysis_prompt)
+analysis_agent_executor = AgentExecutor(
+    agent=analysis_agent,
+    tools=analysis_tools,
+    verbose=True,
+)
+
+
+# ── 실행 함수 ────────────────────────────────────────────────
+async def product_analysis_agent(query: str) -> str:
+    response = await analysis_agent_executor.ainvoke({"input": query})
+    return response["output"]
+
+
+# ── 테스트 ────────────────────────────────────────────────────
+if __name__ == "__main__":
+
+    async def test():
+        result = await product_analysis_agent(
+            "크레이지11에서 머큐리얼 베이퍼 성인용 TF 사이즈 270 10만원대 추천해줘"
+        )
+        print(result)
+
+    asyncio.run(test())
