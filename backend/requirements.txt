@@ -136,6 +136,7 @@ pinecone-client==6.0.0
 pinecone-plugin-interface==0.0.7
 pinecone-text==0.11.0
 platformdirs==4.7.0
+playwright==1.58.0
 posthog==5.4.0
 prompt_toolkit==3.0.52
 propcache==0.4.1
