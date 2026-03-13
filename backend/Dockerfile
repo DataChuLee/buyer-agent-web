@@ -15,6 +15,8 @@ RUN npm install -g @modelcontextprotocol/server-sequential-thinking
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
+RUN playwright install --with-deps chromium
+
 COPY . /app
 
 EXPOSE 8000
