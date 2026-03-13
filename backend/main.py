@@ -7,7 +7,7 @@ from langchain_teddynote import logging
 from pydantic import BaseModel, Field
 
 load_dotenv()
-logging.langsmith("buyer-agent-saas-test_0221")
+logging.langsmith("buyer-agent-saas")
 
 app = FastAPI(title="Buyer Agent Backend", version="0.1.0")
 
@@ -45,13 +45,10 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/buyer-agent/buyer_agent_0221", response_model=BuyerAgentResponse)
+@app.post("/buyer-agent/buyer_agent_0313", response_model=BuyerAgentResponse)
 async def run_buyer_agent(payload: BuyerAgentRequest) -> BuyerAgentResponse:
     try:
-        try:
-            from Agent.orchestrator_agent import orchestrator_agent
-        except ModuleNotFoundError:
-            from backend.Agent.orchestrator_agent import orchestrator_agent
+        from Agent.orchestrator_agent_0310 import orchestrator_agent
 
         result = await orchestrator_agent(
             query=payload.query,
@@ -60,7 +57,9 @@ async def run_buyer_agent(payload: BuyerAgentRequest) -> BuyerAgentResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if not isinstance(result, dict):
-        raise HTTPException(status_code=500, detail="Orchestrator returned invalid payload")
+        raise HTTPException(
+            status_code=500, detail="Orchestrator returned invalid payload"
+        )
 
     response = str(result.get("response", "")).strip()
     agent = str(result.get("agent", "")).strip()
