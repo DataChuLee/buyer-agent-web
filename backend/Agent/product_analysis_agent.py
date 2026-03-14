@@ -101,9 +101,37 @@ analysis_agent_executor = AgentExecutor(
 )
 
 
+# ── 프로필 컨텍스트 헬퍼 ─────────────────────────────────────
+def _build_profile_context(user_profile: dict | None) -> str:
+    if not user_profile:
+        return ""
+    lines = []
+    labels = {
+        "brand": "선호 브랜드",
+        "budget": "예산",
+        "surface": "선호 지면",
+        "position": "포지션",
+        "age_group": "연령대",
+    }
+    for key, label in labels.items():
+        if user_profile.get(key):
+            lines.append(f"- {label}: {user_profile[key]}")
+    if user_profile.get("physical_traits"):
+        lines.append(f"- 신체 특성: {', '.join(user_profile['physical_traits'])}")
+    if user_profile.get("play_style"):
+        lines.append(f"- 플레이 스타일: {', '.join(user_profile['play_style'])}")
+    return "\n".join(lines)
+
+
 # ── 실행 함수 ────────────────────────────────────────────────
-async def product_analysis_agent(query: str) -> str:
-    response = await analysis_agent_executor.ainvoke({"input": query})
+async def product_analysis_agent(query: str, user_profile: dict = None) -> str:
+    profile_context = _build_profile_context(user_profile)
+    full_input = (
+        f"{query}\n\n[유저 프로필 참고 — 비교표 설명에 개인화 반영]\n{profile_context}"
+        if profile_context
+        else query
+    )
+    response = await analysis_agent_executor.ainvoke({"input": full_input})
     return response["output"]
 
 

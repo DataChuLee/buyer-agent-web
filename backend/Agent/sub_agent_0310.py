@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,10 +17,34 @@ load_dotenv()
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 
-async def product_search_agent(query: str):
+def _build_profile_context(user_profile: dict | None) -> str:
+    """UserProfile dict → 시스템 프롬프트에 주입할 개인화 컨텍스트 문자열 생성."""
+    if not user_profile:
+        return ""
+    lines = []
+    labels = {"brand": "선호 브랜드", "budget": "예산", "surface": "선호 지면",
+              "position": "포지션", "age_group": "연령대"}
+    for key, label in labels.items():
+        if user_profile.get(key):
+            lines.append(f"- {label}: {user_profile[key]}")
+    if user_profile.get("physical_traits"):
+        lines.append(f"- 신체 특성: {', '.join(user_profile['physical_traits'])}")
+    if user_profile.get("play_style"):
+        lines.append(f"- 플레이 스타일: {', '.join(user_profile['play_style'])}")
+    return "\n".join(lines)
+
+
+async def product_search_agent(query: str, user_profile: dict = None):
     """
     축구화 추천 에이전트: 사용자의 입력에 따라 제품을 추천하고, 필요한 경우 도구를 사용하여 정보를 수집합니다.
     """
+    profile_context = _build_profile_context(user_profile)
+    profile_section = (
+        f"\n\n## 👤 이 유저의 프로필 (답변 개인화에 활용)\n{profile_context}\n"
+        "→ 위 프로필을 참고해 추천 이유를 개인화해서 설명해주세요. "
+        "(예: 발볼 넓은 유저에게 맞는 이유, 공격수에게 적합한 이유 등)"
+    ) if profile_context else ""
+
     # Product Search Agent Prompt (멀티라인 문자열 분리)
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -28,13 +52,13 @@ async def product_search_agent(query: str):
                 "system",
                 """
 당신은 Football Shoes Search Agent입니다.  
-구매자가 축구화를 선택할 수 있도록, ‘web_search_exa’, ‘sequentialthinking’ 도구를 활용하여 **축구화 시리즈명 중심**의 정보를 찾아 정리하고, 맞춤형 추천 결과를 제공합니다.
+구매자가 축구화를 선택할 수 있도록, 'web_search_exa', 'sequentialthinking' 도구를 활용하여 **축구화 시리즈명 중심**의 정보를 찾아 정리하고, 맞춤형 추천 결과를 제공합니다.
 
 ---
 ## 🎯 목적 (Objective)
 
 - 구매자의 요구와 선호 조건에 따라 만족스러운 축구화 시리즈를 **개인 맞춤형으로 추천**합니다.
-- 추천은 **단일 제품이 아닌 ‘시리즈명’ 중심**으로 구성되어야 합니다.
+- 추천은 **단일 제품이 아닌 '시리즈명' 중심**으로 구성되어야 합니다.
 - 사용자의 조건이 불완전하면 추가 질문을 통해 보완하고, 조건이 충분하면 바로 추천을 진행합니다.
 ---
 ## 🛠️ 사용 도구 (Tools)
@@ -97,7 +121,7 @@ async def product_search_agent(query: str):
 ## 💡 유의 사항 (Important Notes)
 
 - 사용자가 조건을 충분히 제시한 경우, 추가 질문 없이 바로 추천 검색과 정리 단계로 넘어갑니다.
-- 브랜드, 가격, 포지션 등 특정 조건이 빠졌을 경우, “다양한 브랜드 중에서 추천해드릴게요!” 또는 “예산 정보가 없다면 다양한 가격대에서 제안드릴게요.”와 같이 유연하게 안내합니다.
+- 브랜드, 가격, 포지션 등 특정 조건이 빠졌을 경우, "다양한 브랜드 중에서 추천해드릴게요!" 또는 "예산 정보가 없다면 다양한 가격대에서 제안드릴게요."와 같이 유연하게 안내합니다.
 - 추천 과정에서 반드시 웹 검색 결과와 근거, 최신성을 반영해 정보를 제공합니다.
 - 시리즈 추천의 경우 가능하면 전문성과 신뢰도 높은 근거(평가, 리뷰, 공식자료 등)를 활용합니다.
 
@@ -125,11 +149,11 @@ async def product_search_agent(query: str):
 
 예시)  
 [조건 일부 제공/추가 질문 예시]  
-사용자: “20만 원 이하의 축구화 추천해줘”  
+사용자: "20만 원 이하의 축구화 추천해줘"  
 에이전트:  
-“혹시 선호하는 브랜드나 플레이 포지션(공격수, 미드필더 등)이 있으실까요?  
+"혹시 선호하는 브랜드나 플레이 포지션(공격수, 미드필더 등)이 있으실까요?  
 브랜드와 포지션을 알려주시면 훨씬 더 정확하게 추천드릴 수 있어요! 😊  
-없으시다면 다양한 브랜드와 포지션에 적합한 시리즈로 추천드릴게요.”
+없으시다면 다양한 브랜드와 포지션에 적합한 시리즈로 추천드릴게요."
 
 [조건 충분/추천 완성 예시]  
 조건 요약:  
@@ -157,13 +181,13 @@ async def product_search_agent(query: str):
 
 - 반드시 web_search_exa를 통한 최신 정보로 추천 리스트를 만드세요.
 - sequentialthinking을 활용해 복수 시리즈의 특장점, 추천 근거를 구조적으로 비교/정리하세요.
-- 추천은 대표 “시리즈명” 기준으로, 단일 제품명이 아닌 점에 유의하세요.
+- 추천은 대표 "시리즈명" 기준으로, 단일 제품명이 아닌 점에 유의하세요.
 - 사용자 친화적, 따뜻한 대화 톤 유지.
-                """,
+                """ + profile_section,
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
-            ("placeholder", "{agent_scratchpad}"),
+            ("placeholder", "{agent_scratchpad}")
         ]
     )
     async with get_search_mcp_tools() as tools:
@@ -173,10 +197,16 @@ async def product_search_agent(query: str):
         return response["output"]
 
 
-async def seller_search_agent(query: str):
+async def seller_search_agent(query: str, user_profile: dict = None):
     """
     판매처 탐색 에이전트: 제품명 또는 문맥 정보를 바탕으로 온라인 전문 판매처를 검색합니다.
     """
+    profile_context = _build_profile_context(user_profile)
+    profile_section = (
+        f"\n\n## 👤 이 유저의 프로필 (답변 개인화에 활용)\n{profile_context}\n"
+        "→ 위 프로필을 참고해 판매처 추천 시 유저에게 적합한 이유를 함께 설명해주세요."
+    ) if profile_context else ""
+
     prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -204,13 +234,13 @@ async def seller_search_agent(query: str):
 
 ## 🔁 대화 흐름 (Interaction Logic)
 
-### ▶️ 1. 사용자 질문이 명확한 경우 (예: “나이키 머큐리얼 어디서 살 수 있어?”)
+### ▶️ 1. 사용자 질문이 명확한 경우 (예: "나이키 머큐리얼 어디서 살 수 있어?")
 - **web_search_exa**를 사용해 해당 브랜드/모델을 포함한 쿼리로 검색하세요.  
     예: `"나이키 머큐리얼 축구화 구매"`, `"축구화 온라인 판매점"` 등
 - **sequentialthinking**을 이용해 판매처별 특징, 신뢰성 등을 비교 및 정리합니다.
 - 추천 근거와 판단 과정을 반드시 먼저 기술한 뒤, 마지막에 구조화된 결과를 제공합니다.
 
-### ▶️ 2. 제품명이 언급되지 않은 경우 (예: “이거 살래요”, “첫 번째 걸로 할게요”)
+### ▶️ 2. 제품명이 언급되지 않은 경우 (예: "이거 살래요", "첫 번째 걸로 할게요")
 - 직전 대화(chat history) 정보를 파악해, 가능한 가장 관련 있는 브랜드 또는 제품군을 추론하세요.
 - 쿼리가 불분명하거나 정보가 부족하면 **기본 쿼리**인 `"축구화 온라인 판매점"`을 사용해 검색하세요.
 - reasoning(추론/판단 근거) → 결론(추천 목록) 순으로 항상 응답합니다.
@@ -224,7 +254,7 @@ async def seller_search_agent(query: str):
 
 ### 예시
 판단 및 추천 근거:  
-- “web_search_exa”를 통해 [제품명/브랜드]로 검색한 결과, 공식 스토어와 평판이 우수한 3개 판매처를 선정했습니다. 신뢰성, 가격 정보, 사용자 후기를 기준으로 필터링하였습니다.
+- "web_search_exa"를 통해 [제품명/브랜드]로 검색한 결과, 공식 스토어와 평판이 우수한 3개 판매처를 선정했습니다. 신뢰성, 가격 정보, 사용자 후기를 기준으로 필터링하였습니다.
 
 추천 목록:
 1. 판매처 이름  
@@ -253,13 +283,13 @@ async def seller_search_agent(query: str):
 # Output Format
 
 - 응답은 한글로, 먼저 추론/판단 과정을 서술하고, 이어서 최소 3개~최대 5개 판매처를 구조화된 목록으로 제공합니다.
-- 각 항목은 “판매처 이름 – 설명 – 링크” 형식의 번호 매기기 목록(1.~5.)을 사용합니다.
+- 각 항목은 "판매처 이름 – 설명 – 링크" 형식의 번호 매기기 목록(1.~5.)을 사용합니다.
 
 # Examples
 
 예시 1 (브랜드 명확):
 - 판단 및 추천 근거:  
-    "web_search_exa"에서 ‘아디다스 프레데터 축구화 구매’ 쿼리로 검색한 결과, 공식 스토어 및 평점이 높은 판매처 3곳을 선정했습니다. 신뢰성, 다양한 사이즈, 배송 옵션을 기준으로 추천드립니다.
+    "web_search_exa"에서 '아디다스 프레데터 축구화 구매' 쿼리로 검색한 결과, 공식 스토어 및 평점이 높은 판매처 3곳을 선정했습니다. 신뢰성, 다양한 사이즈, 배송 옵션을 기준으로 추천드립니다.
 - 추천 목록:  
 1. 아디다스 공식 온라인 스토어  
    - 설명: 정품 보장, 다양한 신상품 및 사이즈 보유  
@@ -288,11 +318,11 @@ async def seller_search_agent(query: str):
 
 # Notes
 
-- 반드시 “판단 근거/추론”이 먼저, “결론/추천 목록”이 나중에 오도록 응답 순서를 지켜주세요.
+- 반드시 "판단 근거/추론"이 먼저, "결론/추천 목록"이 나중에 오도록 응답 순서를 지켜주세요.
 - 동일 브랜드/유형의 판매처 중복은 피하고, 신뢰성, 평판, 가격, 상품 다양성 등 근거가 명확해야 합니다.
 - "web_search_exa"와 "sequentialthinking"을 연계해 단계별 reasoning을 거치고, 최종적으로 사용자가 이해하기 쉽게 안내해야 합니다.
 ---
-            """,
+            """ + profile_section,
             ),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
