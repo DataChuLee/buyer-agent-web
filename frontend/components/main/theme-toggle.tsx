@@ -10,16 +10,23 @@ interface ThemeToggleProps {
 type ThemeMode = "dark" | "light";
 
 export default function ThemeToggle({ className }: ThemeToggleProps) {
-  const [mode, setMode] = useState<ThemeMode>(() => {
-    if (typeof window === "undefined") return "dark";
-    const saved = window.localStorage.getItem("theme-mode");
-    return saved === "light" ? "light" : "dark";
-  });
+  const [mounted, setMounted] = useState(false);
+  const [mode, setMode] = useState<ThemeMode>("dark");
 
   useEffect(() => {
+    const saved = window.localStorage.getItem("theme-mode");
+    const initial = saved === "light" ? "light" : "dark";
+    setMode(initial);
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
     document.documentElement.classList.toggle("dark", mode === "dark");
     window.localStorage.setItem("theme-mode", mode);
-  }, [mode]);
+  }, [mode, mounted]);
+
+  if (!mounted) return null;
 
   return (
     <div

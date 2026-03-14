@@ -282,7 +282,11 @@ export default function DashboardPage() {
       const response = await fetch("/api/buyer-agent/product-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: userMessage }),
+        body: JSON.stringify({
+          prompt: userMessage,
+          user_id: user?.id ?? "anonymous",
+          session_id: conversationId,
+        }),
       });
       const text = await response.text();
       let data: { response?: string; detail?: string } = {};
