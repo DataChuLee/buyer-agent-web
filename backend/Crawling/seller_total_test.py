@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import threading
 from typing import Any
 
 import pandas as pd
@@ -141,6 +142,33 @@ def build_seller_dataframes(
     return seller_dfs
 
 
+def _run_async_in_new_loop(coro):
+    """Playwright 등 ProactorEventLoop가 필요한 코루틴을 별도 스레드에서 실행."""
+    result = None
+    exc = None
+
+    def _thread():
+        nonlocal result, exc
+        if sys.platform == "win32":
+            loop = asyncio.ProactorEventLoop()
+        else:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(coro)
+        except Exception as e:
+            exc = e
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_thread)
+    t.start()
+    t.join()
+    if exc is not None:
+        raise exc
+    return result
+
+
 async def run_one_seller(
     seller: str,
     product_keyword: str,
@@ -158,7 +186,10 @@ async def run_one_seller(
 
     async with seller_semaphore:
         if inspect.iscoroutinefunction(crawler):
-            result = await crawler(**kwargs)
+            # Playwright 크롤러는 ProactorEventLoop가 필요 → 새 스레드에서 실행
+            result = await asyncio.to_thread(
+                _run_async_in_new_loop, crawler(**kwargs)
+            )
         else:
             result = await asyncio.to_thread(crawler, **kwargs)
 

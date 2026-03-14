@@ -11,12 +11,6 @@ import os
 import re
 import sys
 from typing import Any
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))  # backend/Tools/
-BACKEND_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))  # backend/
-if CURRENT_DIR not in sys.path:
-    sys.path.insert(0, CURRENT_DIR)   # rag_search.py 탐색용
-if BACKEND_DIR not in sys.path:
-    sys.path.append(BACKEND_DIR)      # Crawling/ 탐색용
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.tools import tool
@@ -64,7 +58,11 @@ def item_to_document(item: dict[str, Any]) -> Document:
     sizes = _normalize_sizes(item.get("sizes", []))
 
     name_upper = product_name.upper()
-    age_group = "유소년용" if re.search(r"주니어|JR|키즈|유소년", product_name, re.I) else "성인용"
+    age_group = (
+        "유소년용"
+        if re.search(r"주니어|JR|키즈|유소년", product_name, re.I)
+        else "성인용"
+    )
 
     if "FG" in name_upper:
         ground_type = "FG"
@@ -79,18 +77,22 @@ def item_to_document(item: dict[str, Any]) -> Document:
     else:
         ground_type = "UNKNOWN"
 
-    product_category = "풋살화" if re.search(r"풋살|TF", product_name, re.I) else "축구화"
+    product_category = (
+        "풋살화" if re.search(r"풋살|TF", product_name, re.I) else "축구화"
+    )
     size_text = ", ".join(map(str, sizes)) if sizes else "정보없음"
 
-    page_content = "\n".join([
-        f"상품명: {product_name}",
-        f"판매자: {seller_kr}",
-        f"카테고리: {product_category}",
-        f"연령대: {age_group}",
-        f"지면: {ground_type}",
-        f"가격: {price}원",
-        f"사이즈: {size_text}",
-    ])
+    page_content = "\n".join(
+        [
+            f"상품명: {product_name}",
+            f"판매자: {seller_kr}",
+            f"카테고리: {product_category}",
+            f"연령대: {age_group}",
+            f"지면: {ground_type}",
+            f"가격: {price}원",
+            f"사이즈: {size_text}",
+        ]
+    )
 
     metadata = {
         "seller": seller_kr,
@@ -112,10 +114,7 @@ def item_to_document(item: dict[str, Any]) -> Document:
 # ── Tool 정의 ───────────────────────────────────────────────
 @tool
 async def crawl_and_index(
-    sellers: str,
-    product_keyword: str,
-    min_price: int,
-    max_price: int
+    sellers: str, product_keyword: str, min_price: int, max_price: int
 ) -> str:
     """
     지정한 판매처에서 축구화를 크롤링하고 벡터스토어에 인덱싱합니다.
@@ -163,13 +162,16 @@ async def crawl_and_index(
 
 
 if __name__ == "__main__":
+
     async def test():
-        result = await crawl_and_index.ainvoke({
-            "sellers": "crazy11",
-            "product_keyword": "나이키 머큐리얼 베이퍼",
-            "min_price": 100000,
-            "max_price": 200000,
-        })
+        result = await crawl_and_index.ainvoke(
+            {
+                "sellers": "crazy11",
+                "product_keyword": "나이키 머큐리얼 베이퍼",
+                "min_price": 100000,
+                "max_price": 200000,
+            }
+        )
         print(result)
 
     asyncio.run(test())
