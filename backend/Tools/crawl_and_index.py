@@ -1,26 +1,30 @@
 """
 crawl_and_index.py
 ==================
-seller_total_test.py의 crawl_multiple_sellers를 호출해
-크롤링 결과를 rag_search.py의 shared vectorstore에 upsert하는 Tool.
+Crawler tool that collects product data and upserts it into the shared Chroma
+vectorstore used by rag_search.py.
 """
 
-import asyncio
+from __future__ import annotations
+
 import hashlib
-import os
 import re
-import sys
 from typing import Any
+
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 
 load_dotenv()
 
-# # ── 경로 등록 ───────────────────────────────────────────────
-# sys.path.append(os.path.join(os.path.dirname(__file__), "../Crawling"))
+try:
+    from Tools.seller_normalization import (
+        normalize_seller_crawler,
+        normalize_seller_display,
+    )
+except ImportError:
+    from seller_normalization import normalize_seller_crawler, normalize_seller_display
 
-# ── shared vectorstore (rag_search.py에서 생성된 인스턴스 공유) ──
 from rag_search import vectorstore
 
 SELLER_INPUT_MAP = {
@@ -35,24 +39,30 @@ SELLER_INPUT_MAP = {
 }
 
 
-# ── 크롤링 item → LangChain Document 변환 ───────────────────
 def _normalize_sizes(sizes: Any) -> list[int]:
     if not sizes:
         return []
     if isinstance(sizes, (list, tuple, set)):
-        return sorted({int(x) for x in sizes if str(x).isdigit() and 0 < int(x) < 400})
-    nums = re.findall(r"\d{2,3}", str(sizes))
-    return sorted({int(n) for n in nums if 0 < int(n) < 400})
+        return sorted(
+            {
+                int(value)
+                for value in sizes
+                if str(value).isdigit() and 100 <= int(value) < 400
+            }
+        )
+
+    numbers = re.findall(r"\d{3}", str(sizes))
+    return sorted({int(number) for number in numbers if 100 <= int(number) < 400})
 
 
 def _clean_name(name: str) -> str:
-    t = re.sub(r"\[[^\]]+\]", " ", str(name or "")).strip()
-    return re.sub(r"\s+", " ", t).strip()
+    cleaned = re.sub(r"\[[^\]]+\]", " ", str(name or "")).strip()
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def item_to_document(item: dict[str, Any]) -> Document:
     seller_raw = item.get("seller", "미상")
-    seller_kr = SELLER_INPUT_MAP.get(seller_raw, seller_raw)
+    seller_kr = normalize_seller_display(seller_raw)
     product_name = _clean_name(item.get("product_name", "정보없음"))
     price = int(item.get("product_price") or 0)
     sizes = _normalize_sizes(item.get("sizes", []))
@@ -60,7 +70,7 @@ def item_to_document(item: dict[str, Any]) -> Document:
     name_upper = product_name.upper()
     age_group = (
         "유소년용"
-        if re.search(r"주니어|JR|키즈|유소년", product_name, re.I)
+        if re.search(r"주니어|JR|키즈|유소년", product_name, re.IGNORECASE)
         else "성인용"
     )
 
@@ -78,14 +88,14 @@ def item_to_document(item: dict[str, Any]) -> Document:
         ground_type = "UNKNOWN"
 
     product_category = (
-        "풋살화" if re.search(r"풋살|TF", product_name, re.I) else "축구화"
+        "풋살화" if re.search(r"풋살|TF", product_name, re.IGNORECASE) else "축구화"
     )
     size_text = ", ".join(map(str, sizes)) if sizes else "정보없음"
 
     page_content = "\n".join(
         [
             f"상품명: {product_name}",
-            f"판매자: {seller_kr}",
+            f"판매처: {seller_kr}",
             f"카테고리: {product_category}",
             f"연령대: {age_group}",
             f"지면: {ground_type}",
@@ -111,25 +121,20 @@ def item_to_document(item: dict[str, Any]) -> Document:
     return Document(page_content=page_content, metadata=metadata)
 
 
-# ── Tool 정의 ───────────────────────────────────────────────
 @tool
 async def crawl_and_index(
     sellers: str, product_keyword: str, min_price: int, max_price: int
 ) -> str:
     """
-    지정한 판매처에서 축구화를 크롤링하고 벡터스토어에 인덱싱합니다.
-    rag_search 호출 전에 반드시 먼저 실행하세요.
-
-    Args:
-        sellers: 판매처 목록 (쉼표 구분). 지원: crazy11, soccerboom, redsoccer, cafostore
-        product_keyword: 검색 키워드. 예: "머큐리얼 베이퍼 성인용 TF" -> "머큐리얼 베이퍼 TF" / "나이키 머큐리얼 베이퍼 10만원대" -> "나이키 머큐리얼 베이퍼"
-        min_price: 최소 가격
-        max_price: 최대 가격
+    Crawl products from the requested sellers and upsert them into the shared
+    vectorstore before rag_search runs.
     """
+
     from Crawling.seller_total_test import crawl_multiple_sellers
 
-    seller_list = [s.strip() for s in sellers.split(",")]
-
+    seller_list = [
+        normalize_seller_crawler(seller) for seller in sellers.split(",") if seller.strip()
+    ]
     result = await crawl_multiple_sellers(
         sellers=seller_list,
         product_keyword=product_keyword,
@@ -144,21 +149,24 @@ async def crawl_and_index(
         return f"크롤링 결과 없음. 오류: {errors}"
 
     docs = [item_to_document(item) for item in items]
-
     ids = [
-        hashlib.sha1(d.metadata["product_url"].encode("utf-8")).hexdigest()
-        for d in docs
+        hashlib.sha1(document.metadata["product_url"].encode("utf-8")).hexdigest()
+        for document in docs
     ]
-
     vectorstore.add_documents(docs, ids=ids)
 
     seller_counts: dict[str, int] = {}
     for item in items:
-        s = SELLER_INPUT_MAP.get(item.get("seller", ""), item.get("seller", "미상"))
-        seller_counts[s] = seller_counts.get(s, 0) + 1
+        seller_name = normalize_seller_display(item.get("seller", ""))
+        seller_counts[seller_name] = seller_counts.get(seller_name, 0) + 1
 
-    summary = ", ".join(f"{s}: {c}개" for s, c in seller_counts.items())
-    return f"✅ 인덱싱 완료 — 총 {len(docs)}개 ({summary}). 오류: {errors if errors else '없음'}"
+    summary = ", ".join(
+        f"{seller_name}: {count}개" for seller_name, count in seller_counts.items()
+    )
+    return (
+        f"인덱싱 완료. 총 {len(docs)}개 ({summary}). "
+        f"오류: {errors if errors else '없음'}"
+    )
 
 
 if __name__ == "__main__":
@@ -173,5 +181,7 @@ if __name__ == "__main__":
             }
         )
         print(result)
+
+    import asyncio
 
     asyncio.run(test())
