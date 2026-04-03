@@ -1,5 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import copy
+import os
+import re
+import threading
+import time
+from urllib.parse import quote_plus
+
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -7,11 +16,6 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
-import copy
-import os
-import re
-import threading
-import time
 
 
 DEFAULT_WAIT_SECONDS = float(os.getenv("CRAWL_DEFAULT_WAIT_SECONDS", "1.2"))
@@ -81,6 +85,15 @@ def _build_product_info(name: str, price: str | None):
     return f"{name} | {price}" if price else name
 
 
+def _debug_log(message: str):
+    if os.getenv("CRAWL_DEBUG") == "1":
+        print(message)
+
+
+def _clean_text(raw_text: str | None):
+    return re.sub(r"\s+", " ", raw_text or "").strip()
+
+
 def _abs_url(base: str, maybe_relative: str | None):
     if not maybe_relative:
         return None
@@ -93,63 +106,179 @@ def _abs_url(base: str, maybe_relative: str | None):
     return f"{base}/{maybe_relative}"
 
 
+def _unique_keep_order(values: list[str]):
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _crazy11_extract_size_tokens(texts: list[str]):
+    sizes: list[str] = []
+    for text in texts:
+        normalized = _clean_text(text)
+        for match in re.findall(r"\b\d{2,3}(?:\.\d)?\b", normalized):
+            try:
+                numeric = float(match)
+            except ValueError:
+                continue
+            if 200 <= numeric <= 330:
+                sizes.append(match)
+    return _unique_keep_order(sizes)
+
+
+def _crazy11_extract_sizes_from_preview(page):
+    preview = page.locator("#MK_opt_preview")
+    if preview.count() == 0:
+        return []
+
+    try:
+        page.wait_for_function(
+            """
+            () => {
+                const preview = document.querySelector("#MK_opt_preview");
+                return !!preview && preview.innerText.trim().length > 0;
+            }
+            """,
+            timeout=2500,
+        )
+    except PlaywrightTimeoutError:
+        return []
+
+    texts = preview.locator("option, li, a, button, label, span, div").all_inner_texts()
+    return _crazy11_extract_size_tokens(texts)
+
+
+def _crazy11_extract_sizes_from_detail(context, product_url: str | None):
+    if not product_url:
+        return []
+
+    detail_page = context.new_page()
+    try:
+        detail_page.goto(product_url, wait_until="domcontentloaded")
+        detail_page.wait_for_load_state("networkidle")
+        detail_page.wait_for_timeout(1200)
+
+        candidate_selectors = [
+            "#product_option_id1 option",
+            "#product_option_id2 option",
+            "select[name*='option'] option",
+            "select[id*='option'] option",
+            ".mk_prd_option_list li",
+            ".mk_prd_option_list a",
+            "[class*='option'] li",
+            "[class*='option'] a",
+        ]
+
+        texts: list[str] = []
+        for selector in candidate_selectors:
+            locator = detail_page.locator(selector)
+            if locator.count():
+                texts.extend(locator.all_inner_texts())
+
+        return _crazy11_extract_size_tokens(texts)
+    finally:
+        detail_page.close()
+
+
+def _crazy11_build_search_url(product_keyword: str, min_price: int, max_price: int):
+    encoded_keyword = quote_plus(product_keyword.encode("euc-kr"))
+    return (
+        "https://www.crazy11.co.kr/shop/shopbrand.html"
+        f"?search=&code=&page=1&sort=order&money1={min_price}&money2={max_price}"
+        f"&prize1={encoded_keyword}&company1=&content1=&brcode="
+    )
+
+
 def crazy11_info(product_keyword: str, min_price: int, max_price: int):
-    driver = get_driver()
-    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     products = []
     try:
-        driver.get("https://www.crazy11.co.kr/")
-        search_input = wait.until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//input[@type='text' or @name='search' or @name='keyword']")
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1400, "height": 2200})
+            page = context.new_page()
+
+            page.goto(
+                _crazy11_build_search_url(product_keyword, min_price, max_price),
+                wait_until="domcontentloaded",
             )
-        )
-        search_input.send_keys(product_keyword)
-        search_input.send_keys(Keys.RETURN)
 
-        min_box = wait.until(EC.presence_of_element_located((By.NAME, "money1")))
-        max_box = wait.until(EC.presence_of_element_located((By.NAME, "money2")))
-        min_box.clear()
-        min_box.send_keys(min_price)
-        max_box.clear()
-        max_box.send_keys(max_price)
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(max(800, int(DEFAULT_WAIT_SECONDS * 1000)))
+            page.locator("div.itemsList__item").first.wait_for(timeout=5000)
 
-        search_button = wait.until(
-            EC.element_to_be_clickable((By.CLASS_NAME, "search__box-result-btn"))
-        )
-        search_button.click()
+            product_boxes = page.locator("div.itemsList__item")
+            for index in range(product_boxes.count()):
+                try:
+                    box = product_boxes.nth(index)
+                    name = _clean_text(box.locator(".itemInfo-tit").inner_text())
+                    if not name:
+                        continue
 
-        product_boxes = wait.until(
-            EC.presence_of_all_elements_located((By.CLASS_NAME, "itemsList__item"))
-        )
-        for box in product_boxes:
-            try:
-                product_info = box.find_element(
-                    By.CLASS_NAME, "itemInfo-area"
-                ).text.strip()
-                link = box.find_element(By.TAG_NAME, "a").get_attribute("href")
-                img_elem = box.find_element(By.TAG_NAME, "img")
-                img = (
-                    img_elem.get_attribute("src")
-                    or img_elem.get_attribute("data-src")
-                    or img_elem.get_attribute("data-original")
-                )
-                img = _abs_url("https://www.crazy11.co.kr", img)
-                products.append(
-                    {
-                        "product_info": product_info,
-                        "product_size": None,
-                        "product_url": link,
-                        "product_image": img,
-                    }
-                )
-            except Exception:
-                continue
-    except Exception:
+                    sale_price = _clean_text(box.locator(".txtc-e4").inner_text())
+                    parsed_price = _normalize_price_to_int(sale_price)
+                    if parsed_price is not None and not (
+                        min_price <= parsed_price <= max_price
+                    ):
+                        continue
+
+                    product_info = _build_product_info(name, sale_price)
+                    product_href = box.locator("a.itemInfo").first.get_attribute("href")
+                    product_url = _abs_url("https://www.crazy11.co.kr", product_href)
+
+                    img_elem = box.locator(".itemInfo-img img").first
+                    img = (
+                        img_elem.get_attribute("src")
+                        or img_elem.get_attribute("data-src")
+                        or img_elem.get_attribute("data-original")
+                    )
+                    product_image = _abs_url("https://www.crazy11.co.kr", img)
+
+                    sizes: list[str] = []
+                    size_button = box.locator("a.sizeView")
+                    if size_button.count():
+                        page.evaluate(
+                            """
+                            () => {
+                                const preview = document.querySelector("#MK_opt_preview");
+                                if (preview) {
+                                    preview.innerHTML = "";
+                                    preview.style.display = "none";
+                                }
+                            }
+                            """
+                        )
+                        size_button.first.click(force=True)
+                        page.wait_for_timeout(800)
+                        sizes = _crazy11_extract_sizes_from_preview(page)
+
+                    if not sizes:
+                        sizes = _crazy11_extract_sizes_from_detail(context, product_url)
+
+                    products.append(
+                        {
+                            "product_info": product_info,
+                            "product_size": ", ".join(sizes) if sizes else None,
+                            "product_url": product_url,
+                            "product_image": product_image,
+                        }
+                    )
+                except Exception as exc:
+                    _debug_log(f"crazy11 item parse failed at index {index}: {exc!r}")
+                    continue
+
+            browser.close()
+    except Exception as exc:
+        _debug_log(f"crazy11_info failed: {exc!r}")
         return []
-    finally:
-        driver.quit()
-    return products
+
+    unique = {
+        f"{p.get('product_info')}|{p.get('product_url')}": p for p in products
+    }.values()
+    return list(unique)
 
 
 def redsoccer_info(product_keyword: str, min_price: int, max_price: int):
