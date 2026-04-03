@@ -51,6 +51,10 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _extract_mm_sizes(text: str) -> list[str]:
+    return re.findall(r"\b([1-3]\d{2})\b", text or "")
+
+
 def _normalize_url(url: str | None) -> str:
     if not url:
         return ""
@@ -129,9 +133,9 @@ async def _extract_sizes_from_detail_page(page: Page) -> list[str]:
                     ):
                         continue
 
-                    if re.search(r"(\d{2,3}(\.\d)?)|(mm)|(us)|(uk)|(eu)", lower):
-                        if text not in sizes:
-                            sizes.append(text)
+                    for item in _extract_mm_sizes(text):
+                        if item not in sizes:
+                            sizes.append(item)
         except Exception:
             pass
 
@@ -156,13 +160,8 @@ async def _extract_sizes_from_detail_page(page: Page) -> list[str]:
                 if not raw:
                     continue
 
-                found = re.findall(
-                    r"\b(?:US|UK|EU)?\s?\d{2,3}(?:\.\d)?\b|\b\d{2,3}mm\b",
-                    raw,
-                    re.IGNORECASE,
-                )
+                found = _extract_mm_sizes(raw)
                 for item in found:
-                    item = _clean_text(item)
                     if item and item not in sizes:
                         sizes.append(item)
         except Exception:
@@ -324,7 +323,6 @@ async def crazy11_crawl(
 
             for product, sizes in zip(all_products, sizes_list):
                 product["sizes"] = [] if isinstance(sizes, Exception) else sizes
-            all_products = remove_common_sizes(all_products)
             return all_products
 
         finally:
