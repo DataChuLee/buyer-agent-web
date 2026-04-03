@@ -28,32 +28,33 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await fetch(`${backendUrl}/chat`, {
+    const response = await fetch(`${backendUrl}/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, session_id: sessionId, message }),
       cache: "no-store",
     });
 
-    const text = await response.text();
-    let data: { response?: string; detail?: string } = {};
-
-    if (text) {
-      try {
-        data = JSON.parse(text) as { response?: string; detail?: string };
-      } catch {
-        data = { detail: text };
-      }
-    }
-
     if (!response.ok) {
-      return NextResponse.json(
-        { detail: data.detail ?? "Agent request failed." },
-        { status: response.status }
-      );
+      const text = await response.text();
+      let detail = "Agent request failed.";
+      try {
+        detail = (JSON.parse(text) as { detail?: string }).detail ?? detail;
+      } catch { /* ignore */ }
+      return NextResponse.json({ detail }, { status: response.status });
     }
 
-    return NextResponse.json({ response: data.response ?? "" });
+    if (!response.body) {
+      return NextResponse.json({ detail: "No response body from backend." }, { status: 502 });
+    }
+
+    return new Response(response.body, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown network error";
     return NextResponse.json(
