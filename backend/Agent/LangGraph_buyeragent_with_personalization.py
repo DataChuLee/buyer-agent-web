@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -61,6 +62,9 @@ from State.AgentState_personalization import (
 )
 from Agent.sub_agent_0310 import product_search_agent, seller_search_agent
 from Agent.product_analysis_agent import product_analysis_agent
+from Tools.condition_sanitization import sanitize_condition_map, sanitize_optional_text
+from Tools.rag_search import build_analysis_cards
+from Tools.seller_normalization import normalize_seller_display
 
 load_dotenv()
 
@@ -169,8 +173,15 @@ async def load_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
         "product_name",
         "seller",
     ]
+    for key in structured_keys:
+        normalized = sanitize_optional_text(profile.get(key))
+        if normalized is None:
+            profile.pop(key, None)
+        else:
+            profile[key] = normalized
+
     profile_as_conditions = {k: profile[k] for k in structured_keys if profile.get(k)}
-    current_conditions = state.get("user_conditions", {})
+    current_conditions = sanitize_condition_map(state.get("user_conditions", {}))
     merged_conditions = {**profile_as_conditions, **current_conditions}
 
     return {
@@ -215,6 +226,21 @@ async def save_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
         results = await store.asearch(namespace)
         if results:
             updated_profile = results[0].value
+            structured_keys = [
+                "brand",
+                "budget",
+                "surface",
+                "position",
+                "age_group",
+                "product_name",
+                "seller",
+            ]
+            for key in structured_keys:
+                normalized = sanitize_optional_text(updated_profile.get(key))
+                if normalized is None:
+                    updated_profile.pop(key, None)
+                else:
+                    updated_profile[key] = normalized
             print(f"[Memory] 업데이트된 UserProfile: {updated_profile}")
             return {"user_profile": updated_profile}
 
@@ -222,6 +248,156 @@ async def save_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
         print(f"[Memory] 프로필 업데이트 실패: {e}")
 
     return {}
+
+
+# =============================================================================
+# STEP 4-B. 제품 텍스트 → 구조화 카드 파싱 스키마
+#
+# product_search_agent가 반환한 마크다운 텍스트를 LLM으로 파싱해
+# 프론트엔드 카드 렌더링에 필요한 구조화 데이터를 추출
+# =============================================================================
+
+
+class ProductItem(BaseModel):
+    name: str = Field(description="제품 시리즈명. 예: Nike Phantom GX 2 Academy")
+    features: str = Field(description="제품 특징 요약 (1-2문장)")
+    recommendation: str = Field(description="추천 이유 요약 (1-2문장)")
+    price: str | None = Field(None, description="가격 정보. 없으면 None")
+    url: str | None = Field(None, description="제품/구매 링크 URL. 없으면 None")
+
+
+class ParsedProducts(BaseModel):
+    products: list[ProductItem] = Field(description="추출된 제품 목록 (최대 5개)")
+
+
+_parsing_llm = llm.with_structured_output(ParsedProducts)
+
+
+async def _parse_products(text: str) -> list[dict]:
+    """텍스트 응답에서 제품 목록을 구조화 데이터로 파싱."""
+    try:
+        system = (
+            "아래 텍스트에서 추천된 축구화 제품 목록을 파싱해 구조화된 JSON으로 반환하세요. "
+            "텍스트에 없는 정보는 None으로 두세요."
+        )
+        result: ParsedProducts = await _parsing_llm.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=text)]
+        )
+        return [p.model_dump() for p in result.products]
+    except Exception as e:
+        print(f"[파싱] 제품 구조화 실패: {e}")
+        return []
+
+
+# =============================================================================
+# STEP 4-C. 판매처 텍스트 → 구조화 카드 파싱 스키마
+# =============================================================================
+
+
+class AnalysisItem(BaseModel):
+    name: str = Field(description="제품명. 예: Nike Phantom GX 2")
+    seller: str | None = Field(None, description="판매처. 예: 나이키 공식몰, 크레이지11. 없으면 None")
+    price: str | None = Field(None, description="가격 정보. 없으면 None")
+    size: str | None = Field(None, description="사이즈 정보. 예: 240~290mm. 없으면 None")
+    features: list[str] = Field(description="주요 특징 목록 (2~4개)")
+    image: str | None = Field(None, description="제품 이미지 URL. 없으면 None")
+    url: str | None = Field(None, description="제품 상세 페이지 또는 구매 링크 URL. 없으면 None")
+
+
+class ParsedAnalysis(BaseModel):
+    analysis: list[AnalysisItem] = Field(description="분석된 제품 목록 (최대 5개)")
+
+
+_analysis_parsing_llm = llm.with_structured_output(ParsedAnalysis)
+
+
+async def _parse_analysis(text: str) -> list[dict]:
+    """텍스트 응답에서 제품 분석 목록을 구조화 데이터로 파싱."""
+    try:
+        system = (
+            "아래 텍스트에서 비교/분석된 축구화 제품 목록을 파싱해 구조화된 JSON으로 반환하세요. "
+            "각 제품의 판매처(seller), 가격(price), 사이즈(size), 주요 특징(features), "
+            "이미지 URL(image), 상품 상세/구매 링크(url)를 추출하세요. "
+            "텍스트에 없는 정보는 None으로 두세요."
+        )
+        result: ParsedAnalysis = await _analysis_parsing_llm.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=text)]
+        )
+        return [item.model_dump() for item in result.analysis]
+    except Exception as e:
+        print(f"[파싱] 제품 분석 구조화 실패: {e}")
+        return []
+
+
+def _normalize_analysis_key(value: str | None) -> str:
+    return re.sub(r"[\W_]+", "", (value or "").lower())
+
+
+def _match_analysis_item(card: dict, parsed_items: list[dict]) -> dict | None:
+    card_name = _normalize_analysis_key(card.get("name"))
+    card_seller = _normalize_analysis_key(card.get("seller"))
+
+    if not card_name:
+        return None
+
+    for item in parsed_items:
+        item_name = _normalize_analysis_key(item.get("name"))
+        item_seller = _normalize_analysis_key(item.get("seller"))
+        if item_name == card_name and (not card_seller or not item_seller or item_seller == card_seller):
+            return item
+
+    for item in parsed_items:
+        item_name = _normalize_analysis_key(item.get("name"))
+        if item_name and (item_name in card_name or card_name in item_name):
+            return item
+
+    return None
+
+
+def _merge_analysis_cards(source_cards: list[dict], parsed_items: list[dict]) -> list[dict]:
+    if not source_cards:
+        return parsed_items
+
+    merged_cards: list[dict] = []
+    for card in source_cards:
+        matched = _match_analysis_item(card, parsed_items)
+        merged_cards.append(
+            {
+                **card,
+                "features": matched.get("features") if matched and matched.get("features") else card.get("features", []),
+            }
+        )
+
+    return merged_cards
+
+
+class SellerItem(BaseModel):
+    name: str = Field(description="판매처 이름. 예: 크레이지11, 나이키 공식몰")
+    description: str = Field(description="판매처 특징 요약 (1-2문장)")
+    url: str | None = Field(None, description="판매처 URL. 없으면 None")
+
+
+class ParsedSellers(BaseModel):
+    sellers: list[SellerItem] = Field(description="추출된 판매처 목록 (최대 5개)")
+
+
+_seller_parsing_llm = llm.with_structured_output(ParsedSellers)
+
+
+async def _parse_sellers(text: str) -> list[dict]:
+    """텍스트 응답에서 판매처 목록을 구조화 데이터로 파싱."""
+    try:
+        system = (
+            "아래 텍스트에서 추천된 판매처 목록을 파싱해 구조화된 JSON으로 반환하세요. "
+            "텍스트에 없는 정보는 None으로 두세요."
+        )
+        result: ParsedSellers = await _seller_parsing_llm.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=text)]
+        )
+        return [s.model_dump() for s in result.sellers]
+    except Exception as e:
+        print(f"[파싱] 판매처 구조화 실패: {e}")
+        return []
 
 
 # =============================================================================
@@ -241,7 +417,7 @@ async def save_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
 
 async def extract_conditions_and_intent(state: BuyerAgentStateV2) -> dict:
     previous_intent = state.get("intent", "")
-    user_profile = state.get("user_profile") or {}
+    user_profile = dict(state.get("user_profile") or {})
 
     # UserProfile에서 프롬프트 컨텍스트 구성
     structured_keys = [
@@ -253,6 +429,12 @@ async def extract_conditions_and_intent(state: BuyerAgentStateV2) -> dict:
         "product_name",
         "seller",
     ]
+    for key in structured_keys:
+        normalized = sanitize_optional_text(user_profile.get(key))
+        if normalized is None:
+            user_profile.pop(key, None)
+        else:
+            user_profile[key] = normalized
     structured_items = [
         f"{k}: {user_profile[k]}" for k in structured_keys if user_profile.get(k)
     ]
@@ -292,16 +474,17 @@ async def extract_conditions_and_intent(state: BuyerAgentStateV2) -> dict:
        - [이 유저의 과거 선호도]는 참고용입니다.
          이번 대화에서 사용자가 명시적으로 언급한 것만 추출하세요.
        - brand, budget, surface, position, age_group, product_name, seller
+       - Missing fields must be null. Never output the literal strings "None" or "null".
     """
 
     structured_llm = llm.with_structured_output(ExtractionResult)
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
     result: ExtractionResult = await structured_llm.ainvoke(messages)
 
-    new_conditions = {
-        k: v for k, v in result.conditions.model_dump().items() if v is not None
-    }
-    updated_conditions = {**state.get("user_conditions", {}), **new_conditions}
+    new_conditions = sanitize_condition_map(result.conditions.model_dump())
+    updated_conditions = sanitize_condition_map(
+        {**state.get("user_conditions", {}), **new_conditions}
+    )
 
     print(
         f"[추출] intent={result.intent} | new={new_conditions} | total={updated_conditions}"
@@ -309,6 +492,7 @@ async def extract_conditions_and_intent(state: BuyerAgentStateV2) -> dict:
 
     return {
         "intent": result.intent,
+        "user_profile": user_profile,
         "user_conditions": updated_conditions,
         "status": "checking",
     }
@@ -362,19 +546,76 @@ def route_after_check(state: BuyerAgentStateV2) -> str:
 
 
 # =============================================================================
-# STEP 8. ask_missing_node — 기존과 동일
+# STEP 8. ask_missing_node — 구조화 질문 + UI 선택지 옵션 반환
+#
+# product_search 조건 부족 시 조건별 우선순위 질문을 순서대로 1개씩 표시.
+# 각 질문에는 프론트엔드가 버튼/카드로 렌더링할 선택지(options)를 함께 반환.
 # =============================================================================
+
+# 조건별 질문 텍스트 + 선택지 정의
+_CONDITION_QUESTIONS: dict[str, dict] = {
+    "budget": {
+        "question": "예산은 얼마 정도인가요?",
+        "options": ["10만 원 이하", "20만 원 이하", "30만 원 이하", "30만 원 초과"],
+    },
+    "surface": {
+        "question": "어떤 환경에서 사용하실 예정인가요?",
+        "options": ["천연잔디 (FG)", "인조잔디 (AG/TF)", "풋살장 (IC/IN)", "상관없음"],
+    },
+    "brand": {
+        "question": "선호하는 브랜드가 있으신가요?",
+        "options": ["나이키", "아디다스", "푸마", "뉴발란스", "상관없음"],
+    },
+    "position": {
+        "question": "어떤 포지션을 담당하시나요?",
+        "options": ["공격수", "미드필더", "수비수", "골키퍼", "포지션 무관"],
+    },
+}
+
+# 조건을 묻는 우선순위 순서
+_CONDITION_PRIORITY = ["budget", "surface", "brand", "position"]
 
 
 def ask_missing_node(state: BuyerAgentStateV2) -> dict:
+    intent = state.get("intent", "")
+    conditions = state.get("user_conditions", {})
+
+    # product_search: 남은 모든 조건의 질문 시퀀스를 한 번에 반환
+    # → 프론트엔드가 로컬에서 순서대로 수집 후 마지막에만 API 호출
+    if intent == "product_search":
+        remaining = [k for k in _CONDITION_PRIORITY if k not in conditions]
+        if remaining:
+            # 전체 시퀀스 구성
+            sequence = [
+                {
+                    "key": k,
+                    "question": _CONDITION_QUESTIONS[k]["question"],
+                    "options": _CONDITION_QUESTIONS[k]["options"],
+                }
+                for k in remaining
+            ]
+            first_q = _CONDITION_QUESTIONS[remaining[0]]
+            return {
+                "messages": [AIMessage(content=first_q["question"])],
+                "status": "waiting_input",
+                "question_options": first_q["options"],
+                "question_sequence": sequence,  # 남은 전체 질문 목록
+            }
+
+    # 그 외 / fallback: 자유 텍스트 질문
     missing_str = ", ".join(state["missing_conditions"])
     question = (
-        f"축구화를 더 잘 추천해드리기 위해 몇 가지 여쭤볼게요! 😊\n\n"
+        f"축구화를 더 잘 추천해드리기 위해 몇 가지 여쭤볼게요!\n\n"
         f"다음 정보를 알려주시면 바로 도와드릴 수 있어요:\n"
         f"✅ {missing_str}\n\n"
         f"편하게 말씀해 주세요!"
     )
-    return {"messages": [AIMessage(content=question)], "status": "waiting_input"}
+    return {
+        "messages": [AIMessage(content=question)],
+        "status": "waiting_input",
+        "question_options": None,
+        "question_sequence": None,
+    }
 
 
 # =============================================================================
@@ -410,9 +651,12 @@ async def product_search_node(state: BuyerAgentStateV2) -> dict:
                 "source": "product_search",
             }
         ]
+        # 텍스트 응답 → 구조화 카드 데이터 파싱
+        products = await _parse_products(response)
         return {
             "messages": [AIMessage(content=response)],
             "search_result": search_result,
+            "products": products if products else None,
             "active_agent": "product_search",
             "status": "done",
             "retry_count": 0,
@@ -464,9 +708,11 @@ async def seller_search_node(state: BuyerAgentStateV2) -> dict:
                 "source": "seller_search",
             }
         ]
+        sellers = await _parse_sellers(response)
         return {
             "messages": [AIMessage(content=response)],
             "search_result": search_result_updated,
+            "sellers": sellers if sellers else None,
             "active_agent": "seller_search",
             "status": "done",
             "retry_count": 0,
@@ -492,7 +738,7 @@ async def product_analysis_node(state: BuyerAgentStateV2) -> dict:
         print(f"[전환 감지] {previous_agent} → product_analysis")
 
     query_parts = []
-    seller = conditions.get("seller", "")
+    seller = normalize_seller_display(conditions.get("seller", ""))
     if seller:
         query_parts.append(f"{seller}에서")
 
@@ -514,6 +760,9 @@ async def product_analysis_node(state: BuyerAgentStateV2) -> dict:
         response = await product_analysis_agent(
             query, user_profile=state.get("user_profile") or {}
         )
+        source_cards = build_analysis_cards(query)
+        parsed_items = await _parse_analysis(response)
+        analysis = _merge_analysis_cards(source_cards, parsed_items)
         search_result_updated: list[SearchResultItem] = [
             {
                 "name": product_name or base,
@@ -523,9 +772,11 @@ async def product_analysis_node(state: BuyerAgentStateV2) -> dict:
                 "source": "product_analysis",
             }
         ]
+        # 텍스트 응답 → 구조화 카드 데이터 파싱
         return {
             "messages": [AIMessage(content=response)],
             "search_result": search_result_updated,
+            "analysis": analysis if analysis else None,
             "active_agent": "product_analysis",
             "status": "done",
             "retry_count": 0,
