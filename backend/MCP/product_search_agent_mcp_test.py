@@ -9,7 +9,6 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
-# from langgraph.prebuilt import create_react_agent
 
 load_dotenv()
 SMITHERY_API_KEY = os.environ["SMITHERY_API_KEY"]
@@ -72,11 +71,11 @@ async def main():
         # 3. 선택 이유(장점/단점)
         # 4. 가격/구매 전 확인 포인트
         # """
-        agent = create_agent(llm, tools=tools, system_prompt=prompt)
-        result = await agent.ainvoke({
-            "messages": [("user", "나이키 축구화 10만원대 추천해줘")]
-        })
-        print(result["messages"][-1].content)
+        # agent = create_agent(llm, tools=tools, system_prompt=prompt)
+        # result = await agent.ainvoke({
+        #     "messages": [("user", "나이키 축구화 10만원대 추천해줘")]
+        # })
+        # print(result["messages"][-1].content)
 
 if __name__ == "__main__":
     asyncio.run(main())
