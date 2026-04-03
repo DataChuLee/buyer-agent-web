@@ -1,16 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface PromptAreaProps {
   mode?: "hero" | "chat";
   placeholder?: string;
   isSubmitting?: boolean;
+  fillValue?: string;
   onSubmit?: (payload: {
     message: string;
     imagePreview: string | null;
     selectedTool: string | null;
   }) => void | Promise<void>;
+  onStop?: () => void;
 }
 
 const PlusIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -52,13 +54,22 @@ export default function PromptArea({
   mode = "chat",
   placeholder = "원하는 제품과 예산, 조건을 알려주세요",
   isSubmitting = false,
+  fillValue,
   onSubmit,
+  onStop,
 }: PromptAreaProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [value, setValue] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const hasValue = value.trim().length > 0;
+
+  // 외부에서 조건 수집 완료 후 prompt 입력창 채우기
+  useEffect(() => {
+    if (fillValue !== undefined && fillValue !== "") {
+      setValue(fillValue);
+    }
+  }, [fillValue]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -75,7 +86,7 @@ export default function PromptArea({
     event.target.value = "";
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!hasValue || isSubmitting) {
       return;
@@ -158,10 +169,11 @@ export default function PromptArea({
           </button>
 
           <button
-            type="submit"
-            disabled={!hasValue || isSubmitting}
+            type={isSubmitting ? "button" : "submit"}
+            onClick={isSubmitting ? onStop : undefined}
+            disabled={!isSubmitting && !hasValue}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:bg-white/40"
-            aria-label="Send message"
+            aria-label={isSubmitting ? "Stop generation" : "Send message"}
           >
             {isSubmitting ? <StopIcon className="h-4 w-4" /> : <SendIcon className="h-5 w-5" />}
           </button>
