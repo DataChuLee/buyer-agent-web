@@ -10,7 +10,7 @@ test_0312.ipynb의 LangGraph를 .py로 분리한 파일.
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
@@ -31,6 +31,17 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
+
+try:
+    from Tools.seller_normalization import (
+        find_seller_displays_in_query,
+        replace_seller_aliases_in_query,
+    )
+except ImportError:
+    from seller_normalization import (
+        find_seller_displays_in_query,
+        replace_seller_aliases_in_query,
+    )
 
 load_dotenv()
 
@@ -124,6 +135,151 @@ def parallel_retrieve(query: str) -> list[Document]:
     return results
 
 
+def extract_sellers_from_query(query: str) -> list[str]:
+    return find_seller_displays_in_query(query)
+
+
+def parallel_retrieve(query: str) -> list[Document]:
+    normalized_query = replace_seller_aliases_in_query(query)
+    sellers = find_seller_displays_in_query(normalized_query)
+    if len(sellers) <= 1:
+        return retriever.invoke(normalized_query)
+
+    def search_per_seller(seller: str) -> list[Document]:
+        sub_query = f"{seller}에서 " + re.sub(
+            r"([\w가-힣]+(?:과|와|,)\s*)+[\w가-힣]+\s*에서\s*",
+            "",
+            normalized_query,
+        )
+        return retriever.invoke(sub_query)
+
+    seen_ids: set[str] = set()
+    results: list[Document] = []
+    with ThreadPoolExecutor(max_workers=len(sellers)) as executor:
+        futures = {executor.submit(search_per_seller, s): s for s in sellers}
+        for future in as_completed(futures):
+            for doc in future.result():
+                key = doc.metadata.get("product_url", doc.id or "")
+                if key not in seen_ids:
+                    seen_ids.add(key)
+                    results.append(doc)
+    return results
+
+
+def retrieve_analysis_documents(query: str, limit: int = 5) -> list[Document]:
+    try:
+        docs = parallel_retrieve(query)
+    except Exception:
+        docs = []
+
+    if not docs:
+        docs = vectorstore.similarity_search(query, k=limit)
+
+    seen_keys: set[str] = set()
+    unique_docs: list[Document] = []
+    for doc in docs:
+        key = (
+            doc.metadata.get("product_url")
+            or doc.metadata.get("product_name")
+            or doc.page_content
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_docs.append(doc)
+        if len(unique_docs) >= limit:
+            break
+
+    return unique_docs
+
+
+def retrieve_analysis_documents(query: str, limit: int = 5) -> list[Document]:
+    normalized_query = replace_seller_aliases_in_query(query)
+
+    try:
+        docs = parallel_retrieve(normalized_query)
+    except Exception:
+        docs = []
+
+    if not docs:
+        docs = vectorstore.similarity_search(normalized_query, k=limit)
+
+    seen_keys: set[str] = set()
+    unique_docs: list[Document] = []
+    for doc in docs:
+        key = (
+            doc.metadata.get("product_url")
+            or doc.metadata.get("product_name")
+            or doc.page_content
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_docs.append(doc)
+        if len(unique_docs) >= limit:
+            break
+
+    return unique_docs
+
+
+def _format_price_text(price: Any) -> str | None:
+    digits = re.sub(r"[^\d]", "", str(price or ""))
+    if not digits:
+        return None
+
+    amount = int(digits)
+    if amount <= 0:
+        return None
+
+    return f"{amount:,}원"
+
+
+def _format_size_text(size_text: Any) -> str | None:
+    if not size_text:
+        return None
+
+    parts = [part.strip() for part in str(size_text).split(",") if part.strip()]
+    return ", ".join(parts) if parts else None
+
+
+def _build_default_features(metadata: dict[str, Any]) -> list[str]:
+    features: list[str] = []
+
+    ground_type = str(metadata.get("ground_type") or "").strip().upper()
+    if ground_type and ground_type != "UNKNOWN":
+        features.append(f"{ground_type} 지면에 적합")
+
+    age_group = str(metadata.get("age_group") or "").strip()
+    if age_group:
+        features.append(f"{age_group}용 모델")
+
+    product_category = str(metadata.get("product_category") or "").strip()
+    if product_category:
+        features.append(f"{product_category} 카테고리")
+
+    return features
+
+
+def build_analysis_cards(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+
+    for doc in retrieve_analysis_documents(query, limit=limit):
+        metadata = doc.metadata
+        cards.append(
+            {
+                "name": metadata.get("product_name") or "상품 정보 없음",
+                "seller": metadata.get("seller") or None,
+                "price": _format_price_text(metadata.get("product_price")),
+                "size": _format_size_text(metadata.get("size_text")),
+                "features": _build_default_features(metadata),
+                "image": metadata.get("image_url") or None,
+                "url": metadata.get("product_url") or None,
+            }
+        )
+
+    return cards
+
+
 def format_docs(docs: list[Document]) -> str:
     items = []
     for doc in docs:
@@ -211,6 +367,17 @@ def retrieve_node(state: State) -> dict:
         docs = []
     if not docs:
         docs = vectorstore.similarity_search(state["refined_query"], k=4)
+    return {"context": format_docs(docs)}
+
+
+def retrieve_node(state: State) -> dict:
+    normalized_query = replace_seller_aliases_in_query(state["refined_query"])
+    try:
+        docs = parallel_retrieve(normalized_query)
+    except Exception:
+        docs = []
+    if not docs:
+        docs = vectorstore.similarity_search(normalized_query, k=4)
     return {"context": format_docs(docs)}
 
 
