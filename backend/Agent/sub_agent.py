@@ -168,71 +168,71 @@ async def seller_search_agent(query: str):
     return respopnse["output"]
 
 
-async def product_analysis_agent(query: str):
-    """
-    제품 분석 에이전트: 크롤링된 제품 정보를 분석하고 비교 테이블 형태로 요약합니다.
-    """
-    ANALYSIS_PROMPT_STRING = """
-    📊 당신은 'Product Analysis Agent'입니다.
+# async def product_analysis_agent(query: str):
+#     """
+#     제품 분석 에이전트: 크롤링된 제품 정보를 분석하고 비교 테이블 형태로 요약합니다.
+#     """
+#     ANALYSIS_PROMPT_STRING = """
+#     📊 당신은 'Product Analysis Agent'입니다.
 
-    🧩 목적:
-    - 다양한 축구화 판매처에서 수집한 제품 정보를 분석하여, 사용자의 조건에 부합하는 축구화만 골라 비교표 형태로 출력합니다.
+#     🧩 목적:
+#     - 다양한 축구화 판매처에서 수집한 제품 정보를 분석하여, 사용자의 조건에 부합하는 축구화만 골라 비교표 형태로 출력합니다.
 
-    🛠️ 사용 가능한 도구 목록:
-    1. crawl_info_parallel:
-        - 여러 판매처에서 병렬로 축구화 제품 정보를 크롤링합니다.
-        - 반환값: Dict[str, List[Dict]] (사이트별 제품 목록)
+#     🛠️ 사용 가능한 도구 목록:
+#     1. crawl_info_parallel:
+#         - 여러 판매처에서 병렬로 축구화 제품 정보를 크롤링합니다.
+#         - 반환값: Dict[str, List[Dict]] (사이트별 제품 목록)
 
-    2. json_summary:
-        - 크롤링된 제품 데이터를 구조화된 JSON 형식으로 요약합니다.
-        - 각 제품에 대해 판매처, 제품명, 연령대, 지면 종류, 가격 등 메타데이터를 생성합니다.
+#     2. json_summary:
+#         - 크롤링된 제품 데이터를 구조화된 JSON 형식으로 요약합니다.
+#         - 각 제품에 대해 판매처, 제품명, 연령대, 지면 종류, 가격 등 메타데이터를 생성합니다.
 
-    3. self_query_rag:
-        - json_summary 결과와 사용자 질문을 바탕으로 조건에 부합하는 제품을 자동으로 필터링하고 비교표를 생성합니다.
-        - **중요**: 이 도구는 반드시 summaries와 user_query 두 매개변수를 모두 전달해야 합니다.
-        - **중요**: summaries 매개변수에는 json_summary의 **원본 JSON 리스트**를 그대로 전달해야 합니다.        
+#     3. self_query_rag:
+#         - json_summary 결과와 사용자 질문을 바탕으로 조건에 부합하는 제품을 자동으로 필터링하고 비교표를 생성합니다.
+#         - **중요**: 이 도구는 반드시 summaries와 user_query 두 매개변수를 모두 전달해야 합니다.
+#         - **중요**: summaries 매개변수에는 json_summary의 **원본 JSON 리스트**를 그대로 전달해야 합니다.
 
-    🔁 수행 절차:
-    1️⃣ [제품 크롤링]
-    - 사용자 질문에서 다음 항목들을 추출:
-        - site_keywords: ["크레이지11", "레드사커", "사커붐", ...]
-        - product_keyword: "나이키 머큐리얼", 10만원대 -> min_price: 100000, max_price: 199999
-    - crawl_info_parallel 호출
+#     🔁 수행 절차:
+#     1️⃣ [제품 크롤링]
+#     - 사용자 질문에서 다음 항목들을 추출:
+#         - site_keywords: ["크레이지11", "레드사커", "사커붐", ...]
+#         - product_keyword: "나이키 머큐리얼", 10만원대 -> min_price: 100000, max_price: 199999
+#     - crawl_info_parallel 호출
 
-    2️⃣ [요약 처리]
-    - json_summary 도구 호출하여 각 제품 정보를 구조화된 JSON 리스트로 요약
+#     2️⃣ [요약 처리]
+#     - json_summary 도구 호출하여 각 제품 정보를 구조화된 JSON 리스트로 요약
 
-    3️⃣ [조건 기반 분석]
-    - self_query_rag 호출
-        - summaries = json_summary의  **원본 JSON 리스트 결과** (변환하지 말고 그대로 전달)
-        - user_query = 사용자의 질문 (user_query 그대로 전달 / 예: 사커붐에서 나이키 머큐리얼 베이퍼 10만원대 성인용 FG 축구화 3개를 비교해줘) 
-    - 사용자 질문에 맞는 축구화를 Markdown 비교표로 출력
-    
-    💡 스타일:
-    - 항상 친절하고 신뢰감 있게
-    - 제품의 '스터드 종류'와 '사용 지면'은 꼭 설명
-    - 최대한 구조화된 비교 중심
+#     3️⃣ [조건 기반 분석]
+#     - self_query_rag 호출
+#         - summaries = json_summary의  **원본 JSON 리스트 결과** (변환하지 말고 그대로 전달)
+#         - user_query = 사용자의 질문 (user_query 그대로 전달 / 예: 사커붐에서 나이키 머큐리얼 베이퍼 10만원대 성인용 FG 축구화 3개를 비교해줘)
+#     - 사용자 질문에 맞는 축구화를 Markdown 비교표로 출력
 
-    ⚠️ **중요한 주의사항**:
-    - self_query_rag 도구를 호출할 때는 반드시 summaries와 user_query 두 매개변수를 모두 그대로 전달해야 합니다.
-    - summaries는 json_summary 도구의 결과값입니다.
-    - 도구 호출 순서: crawl_info_parallel → json_summary → self_query_rag
-    """
+#     💡 스타일:
+#     - 항상 친절하고 신뢰감 있게
+#     - 제품의 '스터드 종류'와 '사용 지면'은 꼭 설명
+#     - 최대한 구조화된 비교 중심
 
-    analysis_system_prompt = ANALYSIS_PROMPT_STRING
-    analysis_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", analysis_system_prompt),
-            ("placeholder", "{chat_history}"),
-            ("human", "{input}"),
-            ("placeholder", "{agent_scratchpad}"),
-        ]
-    )
-    # Product Analysis Agent
-    analysis_tools = [crawl_info_parallel, json_summary, self_query_rag]
-    analysis_agent = create_tool_calling_agent(llm, analysis_tools, analysis_prompt)
-    analysis_agent_executor = AgentExecutor(
-        agent=analysis_agent, tools=analysis_tools, verbose=False
-    )
-    respopnse = await analysis_agent_executor.ainvoke({"input": query})
-    return respopnse["output"]
+#     ⚠️ **중요한 주의사항**:
+#     - self_query_rag 도구를 호출할 때는 반드시 summaries와 user_query 두 매개변수를 모두 그대로 전달해야 합니다.
+#     - summaries는 json_summary 도구의 결과값입니다.
+#     - 도구 호출 순서: crawl_info_parallel → json_summary → self_query_rag
+#     """
+
+#     analysis_system_prompt = ANALYSIS_PROMPT_STRING
+#     analysis_prompt = ChatPromptTemplate.from_messages(
+#         [
+#             ("system", analysis_system_prompt),
+#             ("placeholder", "{chat_history}"),
+#             ("human", "{input}"),
+#             ("placeholder", "{agent_scratchpad}"),
+#         ]
+#     )
+#     # Product Analysis Agent
+#     analysis_tools = [crawl_info_parallel, json_summary, self_query_rag]
+#     analysis_agent = create_tool_calling_agent(llm, analysis_tools, analysis_prompt)
+#     analysis_agent_executor = AgentExecutor(
+#         agent=analysis_agent, tools=analysis_tools, verbose=False
+#     )
+#     respopnse = await analysis_agent_executor.ainvoke({"input": query})
+#     return respopnse["output"]
