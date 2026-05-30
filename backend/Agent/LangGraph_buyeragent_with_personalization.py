@@ -1,506 +1,264 @@
-# =============================================================================
-# LangGraph_buyeragent(with personalization).py — LangMem 기반 개인화 오케스트레이터
-#
-# 기존 LangGraph_orchestrator_agent.py 대비 변경점:
-#   1. load_user_memory 노드    → store.asearch()로 UserProfile 로드
-#   2. save_user_memory 노드    → profile_manager.ainvoke()로 자동 업데이트
-#   3. extract_conditions_and_intent → UserProfile을 프롬프트에 주입
-#   4. build_graph → LangGraph Store + LangMem 초기화 포함
-#
-# [핵심: 기존 수동 방식 vs LangMem 방식]
-#
-#   수동 방식 (이전 구현):
-#     _extract_soft_preferences() → LLM 직접 호출로 비정형 정보 추출
-#     _upsert_profile_to_supabase() → psycopg로 SQL 직접 작성
-#     _load_profile_from_supabase() → SQL SELECT
-#
-#   LangMem 방식 (이 파일):
-#     create_memory_store_manager(schemas=[UserProfile])
-#       → 대화를 보고 UserProfile 필드를 자동 추출·업데이트
-#       → enable_inserts=False: 유저당 프로필 1개 유지 (insert가 아닌 update)
-#     store.asearch(namespace) → 저장된 UserProfile 자동 로드
-#     → 별도 SQL, 별도 추출 로직 없이 LangMem이 전부 처리
-#
-# [그래프 흐름]
-#   START
-#     ↓
-#   [load_user_memory]           ← 첫 턴만 (user_profile is None 조건)
-#     ↓                             store.asearch() → UserProfile 로드
-#   [extract_conditions_and_intent]  → user_conditions에 병합 + 프롬프트 주입
-#     ↓
-#   [check_conditions]
-#     ├── 조건 부족 → [ask_missing_node]      → END  (저장 안 함)
-#     ├── chitchat  → [chitchat_node]         → END  (저장 안 함)
-#     ├── product_search   → [product_search_node]   → [save_user_memory] → END
-#     ├── seller_search    → [seller_search_node]    → [save_user_memory] → END
-#     └── product_analysis → [product_analysis_node] → [save_user_memory] → END
-#
-# [참고]
-#   https://langchain-ai.github.io/langmem/guides/manage_user_profile/
-# =============================================================================
-
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+from datetime import datetime, timezone
 from typing import Literal
+from uuid import uuid4
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langmem import create_memory_store_manager
 from pydantic import BaseModel, Field
 
-from State.AgentState_personalization import (
-    BuyerAgentStateV2,
-    SearchResultItem,
-    UserProfile,
-)
-from Agent.sub_agent_0310 import product_search_agent, seller_search_agent
 from Agent.product_analysis_agent import product_analysis_agent
+from Agent.sub_agent_0310 import product_search_agent, seller_search_agent
+from State.AgentState_personalization import BuyerAgentStateV2, SearchResultItem, UserProfile
+from Tools.checkout_adapter import (
+    SUPPORTED_CHECKOUT_SELLERS,
+    build_checkout_session_payload,
+    get_checkout_adapter,
+)
 from Tools.condition_sanitization import sanitize_condition_map, sanitize_optional_text
 from Tools.rag_search import build_analysis_cards
 from Tools.seller_normalization import normalize_seller_display
 
 load_dotenv()
 
-# =============================================================================
-# LLM 설정
-# =============================================================================
+if os.name == "nt":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-
-# =============================================================================
-# STEP 1. 구조화 출력 스키마 (extract_conditions_and_intent용)
-# =============================================================================
+_CONDITION_QUESTIONS: dict[str, dict] = {
+    "budget": {
+        "question": "예산대를 알려주세요.",
+        "options": ["10만원 이하", "20만원 이하", "30만원 이하", "30만원 초과"],
+    },
+    "surface": {
+        "question": "주로 어떤 구장에서 신으시나요?",
+        "options": ["천연잔디(FG)", "인조잔디(AG/TF)", "실내화(IC/IN)", "상관없음"],
+    },
+    "brand": {
+        "question": "선호 브랜드가 있나요?",
+        "options": ["나이키", "아디다스", "푸마", "미즈노", "상관없음"],
+    },
+    "position": {
+        "question": "주 포지션을 알려주세요.",
+        "options": ["공격수", "미드필더", "수비수", "골키퍼", "상관없음"],
+    },
+}
+_CONDITION_PRIORITY = ["budget", "surface", "brand", "position"]
+_PURCHASE_REQUIRED_FIELDS = [
+    "size",
+    "recipient_name",
+    "phone",
+    "address",
+    "detail_address",
+]
 
 
 class ExtractedConditions(BaseModel):
-    brand: str | None = Field(None, description="브랜드명. 예: 나이키, 아디다스")
-    budget: str | None = Field(None, description="예산. 예: 10만원대, 20만원 이하")
-    surface: str | None = Field(None, description="경기 지면. 예: 인조잔디, FG, AG, TF")
-    position: str | None = Field(None, description="포지션. 예: 공격수, 미드필더")
-    age_group: str | None = Field(None, description="연령대. 예: 성인, 유소년")
-    product_name: str | None = Field(
-        None, description="구체적인 제품명. 예: 머큐리얼 베이퍼"
-    )
-    seller: str | None = Field(None, description="판매처명. 예: 크레이지11, 사커붐")
+    brand: str | None = Field(None)
+    budget: str | None = Field(None)
+    surface: str | None = Field(None)
+    position: str | None = Field(None)
+    age_group: str | None = Field(None)
+    product_name: str | None = Field(None)
+    seller: str | None = Field(None)
 
 
 class ExtractionResult(BaseModel):
-    intent: Literal[
-        "product_search", "seller_search", "product_analysis", "chitchat"
-    ] = Field(description="사용자 메시지의 의도 분류")
-    conditions: ExtractedConditions = Field(
-        description="사용자 메시지에서 추출한 조건. 언급되지 않은 항목은 None."
-    )
+    intent: Literal["product_search", "seller_search", "product_analysis", "chitchat"]
+    conditions: ExtractedConditions
 
 
-# =============================================================================
-# STEP 2. LangMem Profile Manager 초기화
-#
-# create_memory_store_manager 핵심 파라미터:
-#   - model: 프로필 추출에 사용할 LLM
-#   - namespace: Store 저장 경로. "{user_id}"는 config에서 자동 치환됨
-#   - schemas=[UserProfile]: 추출할 데이터 구조 (Pydantic 모델)
-#   - enable_inserts=False: 유저당 프로필 1개 유지
-#     → insert 금지, 기존 프로필에 새 정보만 누적 (update only)
-#
-# 동작 방식:
-#   manager.ainvoke({"messages": [...]}, config={"configurable": {"user_id": "..."}})
-#   → 대화 이력을 분석해 UserProfile 각 필드를 자동으로 추출·업데이트
-#   → 내부적으로 LangGraph Store에 저장
-# =============================================================================
+class ProductItem(BaseModel):
+    name: str
+    features: str | None = None
+    recommendation: str | None = None
+    price: str | None = None
+    url: str | None = None
+
+
+class ParsedProducts(BaseModel):
+    products: list[ProductItem]
+
+
+class SellerItem(BaseModel):
+    name: str
+    description: str | None = None
+    why_recommended: str | None = None  # 이 판매처를 추천하는 이유
+    url: str | None = None
+
+
+class ParsedSellers(BaseModel):
+    sellers: list[SellerItem]
+
+
+class AnalysisItem(BaseModel):
+    name: str
+    seller: str | None = None
+    price: str | None = None
+    size: str | None = None
+    image: str | None = None
+    url: str | None = None
+
+
+class ParsedAnalysis(BaseModel):
+    analysis: list[AnalysisItem]
+
+
+class PurchaseExtractionResult(BaseModel):
+    product_index: int | None = None
+    product_name: str | None = None
+    product_url: str | None = None
+    size: str | None = None
+    recipient_name: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    detail_address: str | None = None
+
+
+_products_parser = llm.with_structured_output(ParsedProducts)
+_sellers_parser = llm.with_structured_output(ParsedSellers)
+_analysis_parser = llm.with_structured_output(ParsedAnalysis)
+_purchase_parser = llm.with_structured_output(PurchaseExtractionResult)
 
 profile_manager = create_memory_store_manager(
     "openai:gpt-4o-mini",
     namespace=("users", "{user_id}", "profile"),
     schemas=[UserProfile],
-    enable_inserts=False,  # 유저당 단일 프로필 유지
+    enable_inserts=False,
 )
 
 
-# =============================================================================
-# STEP 3. load_user_memory 노드 — 세션 첫 턴에만 실행
-#
-# [실행 조건]
-#   state["user_profile"] is None → 아직 로드 안 됨 → 실행
-#   state["user_profile"] is not None → 이미 로드됨 → 스킵
-#
-# [로드 방식]
-#   store.asearch(namespace) → LangGraph Store에서 UserProfile 검색
-#   → 신규 유저: 빈 dict {} 반환
-#   → 기존 유저: 저장된 UserProfile dict 반환
-#
-# [user_conditions 병합 전략]
-#   Supabase 프로필(과거) < 현재 세션 조건(최신)
-#   → 과거 데이터를 기본값으로, 이번 세션에서 말한 것이 우선
-# =============================================================================
-
-
-async def load_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
-    # 이미 로드된 경우 스킵 (2턴 이후)
-    if state.get("user_profile") is not None:
-        print(f"[Memory] user_profile 이미 로드됨, 스킵")
-        return {}
-
-    user_id = state["user_id"]
-    print(f"[Memory] 첫 턴 감지 → user_id={user_id} 프로필 로드 시작")
-
-    # LangGraph Store에서 UserProfile 검색
-    namespace = ("users", user_id, "profile")
-    results = await store.asearch(namespace)
-
-    profile: dict = {}
-    if results:
-        profile = results[0].value
-        print(f"[Memory] 로드된 UserProfile: {profile}")
-    else:
-        print(f"[Memory] 신규 유저 — 저장된 프로필 없음")
-
-    # UserProfile의 구조화 필드를 user_conditions 기본값으로 병합
-    # (세션 조건 우선: 이번 세션에서 말한 것이 과거 데이터보다 최신)
-    structured_keys = [
-        "brand",
-        "budget",
-        "surface",
-        "position",
-        "age_group",
-        "product_name",
-        "seller",
-    ]
-    for key in structured_keys:
-        normalized = sanitize_optional_text(profile.get(key))
-        if normalized is None:
-            profile.pop(key, None)
-        else:
-            profile[key] = normalized
-
-    profile_as_conditions = {k: profile[k] for k in structured_keys if profile.get(k)}
-    current_conditions = sanitize_condition_map(state.get("user_conditions", {}))
-    merged_conditions = {**profile_as_conditions, **current_conditions}
-
-    return {
-        "user_profile": profile,
-        "user_conditions": merged_conditions,
-    }
-
-
-# =============================================================================
-# STEP 4. save_user_memory 노드 — 검색/분석 완료 후에만 실행
-#
-# [실행 시점]
-#   product_search_node, seller_search_node, product_analysis_node 이후만 연결
-#   ask_missing_node, chitchat_node 이후에는 연결하지 않음
-#
-# [LangMem 동작]
-#   profile_manager.ainvoke()가 아래를 자동 처리:
-#     1. 대화 이력 분석
-#     2. UserProfile 각 필드 추출 (구조화 + 비정형 모두)
-#        예: brand="나이키", physical_traits=["발볼 넓음"], play_style=["스피드 선호"]
-#     3. enable_inserts=False → 기존 프로필에 새 정보만 누적 (덮어쓰지 않음)
-#     4. LangGraph Store에 자동 저장
-# =============================================================================
-
-
-async def save_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
-    user_id = state["user_id"]
-    messages = state.get("messages", [])
-
-    print(f"[Memory] user_id={user_id} 프로필 업데이트 시작")
-
-    try:
-        # LangMem이 대화에서 UserProfile을 자동 추출·업데이트·저장
-        # store를 config에 명시적으로 전달 → profile_manager가 올바른 store에 접근
-        await profile_manager.ainvoke(
-            {"messages": messages},
-            config={"configurable": {"user_id": user_id}, "store": store},
-        )
-
-        # 업데이트된 프로필을 state에도 반영
-        namespace = ("users", user_id, "profile")
-        results = await store.asearch(namespace)
-        if results:
-            updated_profile = results[0].value
-            structured_keys = [
-                "brand",
-                "budget",
-                "surface",
-                "position",
-                "age_group",
-                "product_name",
-                "seller",
-            ]
-            for key in structured_keys:
-                normalized = sanitize_optional_text(updated_profile.get(key))
-                if normalized is None:
-                    updated_profile.pop(key, None)
-                else:
-                    updated_profile[key] = normalized
-            print(f"[Memory] 업데이트된 UserProfile: {updated_profile}")
-            return {"user_profile": updated_profile}
-
-    except Exception as e:
-        print(f"[Memory] 프로필 업데이트 실패: {e}")
-
+def _extract_profile_content(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return raw.get("content", raw)
     return {}
 
 
-# =============================================================================
-# STEP 4-B. 제품 텍스트 → 구조화 카드 파싱 스키마
-#
-# product_search_agent가 반환한 마크다운 텍스트를 LLM으로 파싱해
-# 프론트엔드 카드 렌더링에 필요한 구조화 데이터를 추출
-# =============================================================================
+def _normalize_profile(profile: dict) -> dict:
+    normalized = dict(profile or {})
+    for key in ["brand", "budget", "surface", "position", "age_group", "product_name", "seller"]:
+        value = sanitize_optional_text(normalized.get(key))
+        if value is None:
+            normalized.pop(key, None)
+        else:
+            normalized[key] = value
+    return normalized
 
 
-class ProductItem(BaseModel):
-    name: str = Field(description="제품 시리즈명. 예: Nike Phantom GX 2 Academy")
-    features: str = Field(description="제품 특징 요약 (1-2문장)")
-    recommendation: str = Field(description="추천 이유 요약 (1-2문장)")
-    price: str | None = Field(None, description="가격 정보. 없으면 None")
-    url: str | None = Field(None, description="제품/구매 링크 URL. 없으면 None")
+async def load_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
+    if state.get("user_profile") is not None:
+        return {}
+
+    namespace = ("users", state["user_id"], "profile")
+    results = await store.asearch(namespace)
+    profile = _normalize_profile(_extract_profile_content(results[0].value) if results else {})
+    profile_as_conditions = {
+        key: profile[key]
+        for key in ["brand", "budget", "surface", "position", "age_group", "product_name", "seller"]
+        if profile.get(key)
+    }
+    merged_conditions = {**profile_as_conditions, **sanitize_condition_map(state.get("user_conditions", {}))}
+    return {"user_profile": profile, "user_conditions": merged_conditions}
 
 
-class ParsedProducts(BaseModel):
-    products: list[ProductItem] = Field(description="추출된 제품 목록 (최대 5개)")
+def _message_contains_purchase_pii(text: str) -> bool:
+    normalized = str(text or "")
+    return bool(
+        re.search(r"\d{2,4}-?\d{3,4}-?\d{4}", normalized)
+        or any(keyword in normalized for keyword in ["주소", "상세주소", "배송지", "받는", "수령인"])
+    )
 
 
-_parsing_llm = llm.with_structured_output(ParsedProducts)
+def _sanitize_messages_for_memory(messages: list) -> list:
+    sanitized = []
+    for message in messages:
+        if isinstance(message, HumanMessage) and _message_contains_purchase_pii(str(message.content)):
+            sanitized.append(HumanMessage(content="[purchase pii omitted]"))
+        else:
+            sanitized.append(message)
+    return sanitized
 
 
-async def _parse_products(text: str) -> list[dict]:
-    """텍스트 응답에서 제품 목록을 구조화 데이터로 파싱."""
+async def save_user_memory(state: BuyerAgentStateV2, store: BaseStore) -> dict:
     try:
-        system = (
-            "아래 텍스트에서 추천된 축구화 제품 목록을 파싱해 구조화된 JSON으로 반환하세요. "
-            "텍스트에 없는 정보는 None으로 두세요."
+        await profile_manager.ainvoke(
+            {"messages": _sanitize_messages_for_memory(state.get("messages", []))},
+            config={"configurable": {"user_id": state["user_id"]}, "store": store},
         )
-        result: ParsedProducts = await _parsing_llm.ainvoke(
-            [SystemMessage(content=system), HumanMessage(content=text)]
-        )
-        return [p.model_dump() for p in result.products]
-    except Exception as e:
-        print(f"[파싱] 제품 구조화 실패: {e}")
-        return []
+        namespace = ("users", state["user_id"], "profile")
+        results = await store.asearch(namespace)
+        if results:
+            return {"user_profile": _normalize_profile(_extract_profile_content(results[0].value))}
+    except Exception:
+        return {}
+    return {}
 
 
-# =============================================================================
-# STEP 4-C. 판매처 텍스트 → 구조화 카드 파싱 스키마
-# =============================================================================
+def _last_user_message(state: BuyerAgentStateV2) -> str:
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            return str(message.content).strip()
+    return ""
 
 
-class AnalysisItem(BaseModel):
-    name: str = Field(description="제품명. 예: Nike Phantom GX 2")
-    seller: str | None = Field(None, description="판매처. 예: 나이키 공식몰, 크레이지11. 없으면 None")
-    price: str | None = Field(None, description="가격 정보. 없으면 None")
-    size: str | None = Field(None, description="사이즈 정보. 예: 240~290mm. 없으면 None")
-    features: list[str] = Field(description="주요 특징 목록 (2~4개)")
-    image: str | None = Field(None, description="제품 이미지 URL. 없으면 None")
-    url: str | None = Field(None, description="제품 상세 페이지 또는 구매 링크 URL. 없으면 None")
+def _looks_like_purchase_intent(message: str) -> bool:
+    patterns = [
+        r"이걸로\s*살게",
+        r"이거로\s*살게",
+        r"구매해줘",
+        r"주문해줘",
+        r"결제\s*직전",
+        r"주문\s*진행",
+        r"살게",
+    ]
+    return any(re.search(pattern, message) for pattern in patterns)
 
 
-class ParsedAnalysis(BaseModel):
-    analysis: list[AnalysisItem] = Field(description="분석된 제품 목록 (최대 5개)")
-
-
-_analysis_parsing_llm = llm.with_structured_output(ParsedAnalysis)
-
-
-async def _parse_analysis(text: str) -> list[dict]:
-    """텍스트 응답에서 제품 분석 목록을 구조화 데이터로 파싱."""
-    try:
-        system = (
-            "아래 텍스트에서 비교/분석된 축구화 제품 목록을 파싱해 구조화된 JSON으로 반환하세요. "
-            "각 제품의 판매처(seller), 가격(price), 사이즈(size), 주요 특징(features), "
-            "이미지 URL(image), 상품 상세/구매 링크(url)를 추출하세요. "
-            "텍스트에 없는 정보는 None으로 두세요."
-        )
-        result: ParsedAnalysis = await _analysis_parsing_llm.ainvoke(
-            [SystemMessage(content=system), HumanMessage(content=text)]
-        )
-        return [item.model_dump() for item in result.analysis]
-    except Exception as e:
-        print(f"[파싱] 제품 분석 구조화 실패: {e}")
-        return []
-
-
-def _normalize_analysis_key(value: str | None) -> str:
-    return re.sub(r"[\W_]+", "", (value or "").lower())
-
-
-def _match_analysis_item(card: dict, parsed_items: list[dict]) -> dict | None:
-    card_name = _normalize_analysis_key(card.get("name"))
-    card_seller = _normalize_analysis_key(card.get("seller"))
-
-    if not card_name:
-        return None
-
-    for item in parsed_items:
-        item_name = _normalize_analysis_key(item.get("name"))
-        item_seller = _normalize_analysis_key(item.get("seller"))
-        if item_name == card_name and (not card_seller or not item_seller or item_seller == card_seller):
-            return item
-
-    for item in parsed_items:
-        item_name = _normalize_analysis_key(item.get("name"))
-        if item_name and (item_name in card_name or card_name in item_name):
-            return item
-
-    return None
-
-
-def _merge_analysis_cards(source_cards: list[dict], parsed_items: list[dict]) -> list[dict]:
-    if not source_cards:
-        return parsed_items
-
-    merged_cards: list[dict] = []
-    for card in source_cards:
-        matched = _match_analysis_item(card, parsed_items)
-        merged_cards.append(
-            {
-                **card,
-                "features": matched.get("features") if matched and matched.get("features") else card.get("features", []),
-            }
-        )
-
-    return merged_cards
-
-
-class SellerItem(BaseModel):
-    name: str = Field(description="판매처 이름. 예: 크레이지11, 나이키 공식몰")
-    description: str = Field(description="판매처 특징 요약 (1-2문장)")
-    url: str | None = Field(None, description="판매처 URL. 없으면 None")
-
-
-class ParsedSellers(BaseModel):
-    sellers: list[SellerItem] = Field(description="추출된 판매처 목록 (최대 5개)")
-
-
-_seller_parsing_llm = llm.with_structured_output(ParsedSellers)
-
-
-async def _parse_sellers(text: str) -> list[dict]:
-    """텍스트 응답에서 판매처 목록을 구조화 데이터로 파싱."""
-    try:
-        system = (
-            "아래 텍스트에서 추천된 판매처 목록을 파싱해 구조화된 JSON으로 반환하세요. "
-            "텍스트에 없는 정보는 None으로 두세요."
-        )
-        result: ParsedSellers = await _seller_parsing_llm.ainvoke(
-            [SystemMessage(content=system), HumanMessage(content=text)]
-        )
-        return [s.model_dump() for s in result.sellers]
-    except Exception as e:
-        print(f"[파싱] 판매처 구조화 실패: {e}")
-        return []
-
-
-# =============================================================================
-# STEP 5. extract_conditions_and_intent — UserProfile 컨텍스트 주입 버전
-#
-# 기존 대비 변경:
-#   - user_profile (LangGraph Store에서 로드) → 프롬프트에 주입
-#     · 구조화 선호도: brand, budget, surface 등
-#     · 비정형 선호도: physical_traits, play_style (LangMem이 추출한 것)
-#   → LLM이 유저 맥락을 이해하고 더 자연스러운 추천 가능
-#
-# [중요] 과거 프로필은 참고용으로만 주입
-#   이번 대화에서 명시적으로 언급된 것만 conditions로 추출하도록 지시
-#   → 사용자가 말하지 않은 것을 자동으로 채우는 부작용 방지
-# =============================================================================
+def _should_continue_purchase(state: BuyerAgentStateV2, message: str) -> bool:
+    return state.get("purchase_status") in {"awaiting_product_selection", "awaiting_purchase_info"}
 
 
 async def extract_conditions_and_intent(state: BuyerAgentStateV2) -> dict:
     previous_intent = state.get("intent", "")
-    user_profile = dict(state.get("user_profile") or {})
+    user_profile = _normalize_profile(dict(state.get("user_profile") or {}))
+    structured_items = [f"{k}: {user_profile[k]}" for k in user_profile if user_profile.get(k)]
 
-    # UserProfile에서 프롬프트 컨텍스트 구성
-    structured_keys = [
-        "brand",
-        "budget",
-        "surface",
-        "position",
-        "age_group",
-        "product_name",
-        "seller",
-    ]
-    for key in structured_keys:
-        normalized = sanitize_optional_text(user_profile.get(key))
-        if normalized is None:
-            user_profile.pop(key, None)
-        else:
-            user_profile[key] = normalized
-    structured_items = [
-        f"{k}: {user_profile[k]}" for k in structured_keys if user_profile.get(k)
-    ]
-    physical_traits = user_profile.get("physical_traits", [])
-    play_style = user_profile.get("play_style", [])
-
-    profile_context = ""
-    if structured_items:
-        profile_context += (
-            f"\n    [이 유저의 과거 선호도]: {', '.join(structured_items)}"
-        )
-    if physical_traits:
-        profile_context += f"\n    [이 유저의 신체 특성]: {', '.join(physical_traits)}"
-    if play_style:
-        profile_context += f"\n    [이 유저의 플레이 스타일]: {', '.join(play_style)}"
-
-    intent_context = (
-        f"\n    현재 진행 중인 의도: {previous_intent}" if previous_intent else ""
+    system_prompt = (
+        "You are a Korean shopping intent classifier for soccer shoes.\n"
+        f"Current intent: {previous_intent or 'none'}\n"
+        f"Known profile: {', '.join(structured_items) if structured_items else 'none'}\n"
+        "Classify intent as one of product_search, seller_search, product_analysis, chitchat.\n"
+        "Extract only conditions explicitly stated in the latest user request."
     )
-
-    system_prompt = f"""
-    당신은 축구화 구매 도우미 AI입니다.
-    전체 대화 이력을 보고 아래 두 가지를 동시에 수행하세요.{intent_context}{profile_context}
-
-    1. intent 분류 규칙 (중요):
-       - AI가 조건(포지션, 예산, 브랜드 등)을 질문했고, 사용자가 그 답을 제공하는 경우
-         → "현재 진행 중인 의도"를 그대로 유지하세요. intent를 바꾸지 마세요.
-         예: AI가 "포지션이 어떻게 되세요?" → 사용자 "공격수야!" → product_search 유지
-       - 사용자가 명확히 다른 의도를 표현할 때만 intent를 변경하세요.
-       - intent 종류:
-         · product_search: 제품 추천/검색 요청
-         · seller_search: 판매처 탐색 요청
-         · product_analysis: 제품 비교/분석 요청
-         · chitchat: 명확히 구매와 무관한 일상 대화
-
-    2. conditions 추출 (이번 대화에서 언급된 것만, 없으면 None):
-       - [이 유저의 과거 선호도]는 참고용입니다.
-         이번 대화에서 사용자가 명시적으로 언급한 것만 추출하세요.
-       - brand, budget, surface, position, age_group, product_name, seller
-       - Missing fields must be null. Never output the literal strings "None" or "null".
-    """
-
-    structured_llm = llm.with_structured_output(ExtractionResult)
-    messages = [SystemMessage(content=system_prompt)] + state["messages"]
-    result: ExtractionResult = await structured_llm.ainvoke(messages)
+    extractor = llm.with_structured_output(ExtractionResult)
+    result: ExtractionResult = await extractor.ainvoke(
+        [SystemMessage(content=system_prompt)] + state["messages"]
+    )
 
     new_conditions = sanitize_condition_map(result.conditions.model_dump())
-    updated_conditions = sanitize_condition_map(
-        {**state.get("user_conditions", {}), **new_conditions}
-    )
-
-    print(
-        f"[추출] intent={result.intent} | new={new_conditions} | total={updated_conditions}"
-    )
+    updated_conditions = sanitize_condition_map({**state.get("user_conditions", {}), **new_conditions})
+    latest = _last_user_message(state)
+    intent = result.intent
+    if _looks_like_purchase_intent(latest) or _should_continue_purchase(state, latest):
+        intent = "purchase_prepare"
 
     return {
-        "intent": result.intent,
+        "intent": intent,
         "user_profile": user_profile,
         "user_conditions": updated_conditions,
         "status": "checking",
     }
-
-
-# =============================================================================
-# STEP 6. check_conditions — 기존과 동일
-# =============================================================================
 
 
 def check_conditions(state: BuyerAgentStateV2) -> dict:
@@ -511,138 +269,168 @@ def check_conditions(state: BuyerAgentStateV2) -> dict:
 
     if intent == "product_search":
         if not conditions:
-            missing.append("brand(브랜드), budget(예산), surface(지면) 중 하나 이상")
-
+            missing.append("brand, budget, surface 중 하나 이상")
     elif intent == "seller_search":
-        if not (bool(search_result) or bool(conditions.get("product_name"))):
-            missing.append("구매하려는 제품명 또는 브랜드")
-
+        if not (search_result or conditions.get("product_name")):
+            missing.append("상품명 또는 이전 검색 결과")
     elif intent == "product_analysis":
-        if not (bool(search_result) or bool(conditions.get("product_name"))):
-            missing.append("비교할 제품명 또는 이전 검색 결과")
+        if not (search_result or conditions.get("product_name")):
+            missing.append("비교할 상품명 또는 이전 검색 결과")
 
     return {
         "missing_conditions": missing,
-        "status": "waiting_input" if missing else "searching",
+        "status": "waiting_input" if missing else "responding",
     }
-
-
-# =============================================================================
-# STEP 7. 라우팅 엣지 — 기존과 동일
-# =============================================================================
 
 
 def route_after_check(state: BuyerAgentStateV2) -> str:
     if state["missing_conditions"]:
         return "ask_missing_node"
-
-    routing_map = {
+    return {
         "product_search": "product_search_node",
         "seller_search": "seller_search_node",
         "product_analysis": "product_analysis_node",
+        "purchase_prepare": "purchase_prepare_node",
         "chitchat": "chitchat_node",
-    }
-    return routing_map.get(state["intent"], "chitchat_node")
-
-
-# =============================================================================
-# STEP 8. ask_missing_node — 구조화 질문 + UI 선택지 옵션 반환
-#
-# product_search 조건 부족 시 조건별 우선순위 질문을 순서대로 1개씩 표시.
-# 각 질문에는 프론트엔드가 버튼/카드로 렌더링할 선택지(options)를 함께 반환.
-# =============================================================================
-
-# 조건별 질문 텍스트 + 선택지 정의
-_CONDITION_QUESTIONS: dict[str, dict] = {
-    "budget": {
-        "question": "예산은 얼마 정도인가요?",
-        "options": ["10만 원 이하", "20만 원 이하", "30만 원 이하", "30만 원 초과"],
-    },
-    "surface": {
-        "question": "어떤 환경에서 사용하실 예정인가요?",
-        "options": ["천연잔디 (FG)", "인조잔디 (AG/TF)", "풋살장 (IC/IN)", "상관없음"],
-    },
-    "brand": {
-        "question": "선호하는 브랜드가 있으신가요?",
-        "options": ["나이키", "아디다스", "푸마", "뉴발란스", "상관없음"],
-    },
-    "position": {
-        "question": "어떤 포지션을 담당하시나요?",
-        "options": ["공격수", "미드필더", "수비수", "골키퍼", "포지션 무관"],
-    },
-}
-
-# 조건을 묻는 우선순위 순서
-_CONDITION_PRIORITY = ["budget", "surface", "brand", "position"]
+    }.get(state["intent"], "chitchat_node")
 
 
 def ask_missing_node(state: BuyerAgentStateV2) -> dict:
-    intent = state.get("intent", "")
-    conditions = state.get("user_conditions", {})
-
-    # product_search: 남은 모든 조건의 질문 시퀀스를 한 번에 반환
-    # → 프론트엔드가 로컬에서 순서대로 수집 후 마지막에만 API 호출
-    if intent == "product_search":
-        remaining = [k for k in _CONDITION_PRIORITY if k not in conditions]
+    if state.get("intent") == "product_search":
+        conditions = state.get("user_conditions", {})
+        remaining = [key for key in _CONDITION_PRIORITY if key not in conditions]
         if remaining:
-            # 전체 시퀀스 구성
             sequence = [
                 {
-                    "key": k,
-                    "question": _CONDITION_QUESTIONS[k]["question"],
-                    "options": _CONDITION_QUESTIONS[k]["options"],
+                    "key": key,
+                    "question": _CONDITION_QUESTIONS[key]["question"],
+                    "options": _CONDITION_QUESTIONS[key]["options"],
                 }
-                for k in remaining
+                for key in remaining
             ]
-            first_q = _CONDITION_QUESTIONS[remaining[0]]
+            first = sequence[0]
             return {
-                "messages": [AIMessage(content=first_q["question"])],
+                "messages": [AIMessage(content=first["question"])],
                 "status": "waiting_input",
-                "question_options": first_q["options"],
-                "question_sequence": sequence,  # 남은 전체 질문 목록
+                "question_options": first["options"],
+                "question_sequence": sequence,
             }
 
-    # 그 외 / fallback: 자유 텍스트 질문
-    missing_str = ", ".join(state["missing_conditions"])
-    question = (
-        f"축구화를 더 잘 추천해드리기 위해 몇 가지 여쭤볼게요!\n\n"
-        f"다음 정보를 알려주시면 바로 도와드릴 수 있어요:\n"
-        f"✅ {missing_str}\n\n"
-        f"편하게 말씀해 주세요!"
-    )
+    missing = ", ".join(state.get("missing_conditions", []))
     return {
-        "messages": [AIMessage(content=question)],
+        "messages": [AIMessage(content=f"추가로 필요한 정보가 있어요: {missing}")],
         "status": "waiting_input",
         "question_options": None,
         "question_sequence": None,
     }
 
 
-# =============================================================================
-# STEP 9~11. 검색/분석 노드 — 기존과 동일
-# =============================================================================
+async def _parse_products(text: str) -> list[dict] | None:
+    try:
+        result: ParsedProducts = await _products_parser.ainvoke(
+            [
+                SystemMessage(content=(
+                    "Extract recommended football shoe SERIES/MODEL cards from the text. "
+                    "Each card must represent a series or model line (e.g. '나이키 머큐리얼 베이퍼 시리즈'), "
+                    "NOT individual SKUs, specific colorways, or size variants. "
+                    "The 'name' field must be a series/model name only — strip out any size numbers, "
+                    "edition suffixes, or colorway names."
+                )),
+                HumanMessage(content=text),
+            ]
+        )
+        return [item.model_dump() for item in result.products]
+    except Exception:
+        return None
+
+
+async def _parse_sellers(text: str) -> list[dict] | None:
+    try:
+        # reasoning 섹션 제외 — "추천 목록" 이후 텍스트만 파싱해 중복 방지
+        list_section = text
+        marker_idx = text.find("추천 목록")
+        if marker_idx != -1:
+            list_section = text[marker_idx:]
+
+        result: ParsedSellers = await _sellers_parser.ainvoke(
+            [
+                SystemMessage(content=(
+                    "Extract seller cards from the '추천 목록' section only. "
+                    "Each numbered entry is one seller. "
+                    "Fields: name (판매처 이름), description (설명 field content), "
+                    "why_recommended (추천 이유 field content), url (링크 field URL). "
+                    "Each seller name must appear EXACTLY ONCE — "
+                    "if the same name appears multiple times, keep only the first occurrence."
+                )),
+                HumanMessage(content=list_section),
+            ]
+        )
+        # 파싱 결과 name 기준 중복 제거
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for item in result.sellers:
+            key = item.name.strip().lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(item.model_dump())
+        return unique or None
+    except Exception:
+        return None
+
+
+async def _parse_analysis(text: str) -> list[dict] | None:
+    try:
+        result: ParsedAnalysis = await _analysis_parser.ainvoke(
+            [
+                SystemMessage(
+                    content="Extract product analysis cards with seller, price, size and url from the text."
+                ),
+                HumanMessage(content=text),
+            ]
+        )
+        return [item.model_dump() for item in result.analysis]
+    except Exception:
+        return None
+
+
+def _normalize_purchase_product(item: dict | None) -> dict | None:
+    if not item:
+        return None
+    product_url = sanitize_optional_text(item.get("url") or item.get("product_url"))
+    if not product_url:
+        return None
+    return {
+        "product_key": product_url,
+        "product_url": product_url,
+        "url": product_url,
+        "name": sanitize_optional_text(item.get("name")),
+        "seller": normalize_seller_display(item.get("seller", "")) or None,
+        "price": sanitize_optional_text(item.get("price")),
+        "size": sanitize_optional_text(item.get("size")),
+        "available_size": sanitize_optional_text(item.get("size") or item.get("available_size")),
+        "selected_size": sanitize_optional_text(item.get("selected_size")),
+        "quantity": 1,
+    }
+
+
+def _normalize_analysis_key(value: str | None) -> str:
+    return re.sub(r"[\W_]+", "", str(value or "").lower())
 
 
 async def product_search_node(state: BuyerAgentStateV2) -> dict:
     conditions = state.get("user_conditions", {})
-    previous_agent = state.get("active_agent")
-
-    if previous_agent and previous_agent != "product_search":
-        print(f"[전환 감지] {previous_agent} → product_search")
-
     query_parts = [
-        conditions[k]
-        for k in ["brand", "budget", "surface", "position", "age_group", "product_name"]
-        if conditions.get(k)
+        conditions[key]
+        for key in ["brand", "budget", "surface", "position", "age_group", "product_name"]
+        if conditions.get(key)
     ]
     base = " ".join(query_parts) if query_parts else "축구화"
     query = f"{base} 축구화 추천"
-
-    try:
-        response = await product_search_agent(
-            query, user_profile=state.get("user_profile") or {}
-        )
-        search_result: list[SearchResultItem] = [
+    response = await product_search_agent(query, user_profile=state.get("user_profile") or {})
+    products = await _parse_products(response)
+    return {
+        "messages": [AIMessage(content=response)],
+        "search_result": [
             {
                 "name": conditions.get("product_name", base),
                 "description": response,
@@ -650,120 +438,75 @@ async def product_search_node(state: BuyerAgentStateV2) -> dict:
                 "url": "",
                 "source": "product_search",
             }
-        ]
-        # 텍스트 응답 → 구조화 카드 데이터 파싱
-        products = await _parse_products(response)
-        return {
-            "messages": [AIMessage(content=response)],
-            "search_result": search_result,
-            "products": products if products else None,
-            "active_agent": "product_search",
-            "status": "done",
-            "retry_count": 0,
-            "error": None,
-        }
-
-    except Exception as e:
-        current_retry = state.get("retry_count", 0)
-        if current_retry < 3:
-            return {
-                "status": "error",
-                "error": str(e),
-                "retry_count": current_retry + 1,
-            }
-        return {
-            "messages": [
-                AIMessage(content="죄송해요, 제품 검색 중 오류가 발생했어요.")
-            ],
-            "status": "error",
-            "error": str(e),
-        }
+        ],
+        "products": products,
+        "active_agent": "product_search",
+        "status": "done",
+        "retry_count": 0,
+        "error": None,
+    }
 
 
 async def seller_search_node(state: BuyerAgentStateV2) -> dict:
-    previous_agent = state.get("active_agent")
     search_result = state.get("search_result", [])
     conditions = state.get("user_conditions", {})
-
-    if previous_agent == "product_search" and search_result:
-        product_name = search_result[0].get("name", "")
-        print(
-            f"[전환 감지] product_search → seller_search | 인계된 제품: {product_name}"
-        )
-        query = f"{product_name} 축구화 온라인 판매처"
+    if state.get("active_agent") == "product_search" and search_result:
+        base = search_result[0].get("name", "")
     else:
         base = conditions.get("product_name") or conditions.get("brand") or "축구화"
-        query = f"{base} 축구화 온라인 판매처"
+    query = f"{base} 판매처 추천"
+    response = await seller_search_agent(query, user_profile=state.get("user_profile") or {})
+    sellers = await _parse_sellers(response)
 
-    try:
-        response = await seller_search_agent(
-            query, user_profile=state.get("user_profile") or {}
-        )
-        search_result_updated: list[SearchResultItem] = [
-            {
-                "name": query,
-                "description": response,
-                "price": "",
-                "url": "",
-                "source": "seller_search",
-            }
-        ]
-        sellers = await _parse_sellers(response)
-        return {
-            "messages": [AIMessage(content=response)],
-            "search_result": search_result_updated,
-            "sellers": sellers if sellers else None,
-            "active_agent": "seller_search",
-            "status": "done",
-            "retry_count": 0,
-            "error": None,
-        }
+    # 안전망: regex 정규화 기반 2차 중복 제거
+    if sellers:
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for s in sellers:
+            key = re.sub(r"[\W_]+", "", str(s.get("name", "")).lower())
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(s)
+        sellers = deduped or None
 
-    except Exception as e:
-        return {
-            "messages": [
-                AIMessage(content="죄송해요, 판매처 검색 중 오류가 발생했어요.")
-            ],
-            "status": "error",
-            "error": str(e),
-        }
+    return {
+        "messages": [AIMessage(content=response)],
+        "search_result": [
+            {"name": query, "description": response, "price": "", "url": "", "source": "seller_search"}
+        ],
+        "sellers": sellers,
+        "active_agent": "seller_search",
+        "status": "done",
+        "retry_count": 0,
+        "error": None,
+    }
 
 
 async def product_analysis_node(state: BuyerAgentStateV2) -> dict:
-    previous_agent = state.get("active_agent")
     search_result = state.get("search_result", [])
     conditions = state.get("user_conditions", {})
-
-    if previous_agent and previous_agent != "product_analysis":
-        print(f"[전환 감지] {previous_agent} → product_analysis")
-
     query_parts = []
-    seller = normalize_seller_display(conditions.get("seller", ""))
-    if seller:
-        query_parts.append(f"{seller}에서")
-
-    product_name = conditions.get("product_name", "")
-    if not product_name and previous_agent == "product_search" and search_result:
+    if conditions.get("seller"):
+        query_parts.append(f"{normalize_seller_display(conditions['seller'])}에서")
+    product_name = conditions.get("product_name")
+    if not product_name and state.get("active_agent") == "product_search" and search_result:
         product_name = search_result[0].get("name", "")
     if product_name:
         query_parts.append(product_name)
-    if conditions.get("brand") and not product_name:
-        query_parts.append(conditions["brand"])
-    for key in ["budget", "age_group", "surface", "position"]:
-        if conditions.get(key):
+    for key in ["brand", "budget", "age_group", "surface", "position"]:
+        if conditions.get(key) and conditions.get(key) not in query_parts:
             query_parts.append(conditions[key])
-
     base = " ".join(query_parts) if query_parts else "축구화"
-    query = f"{base} 축구화 비교해줘"
-
-    try:
-        response = await product_analysis_agent(
-            query, user_profile=state.get("user_profile") or {}
-        )
-        source_cards = build_analysis_cards(query)
-        parsed_items = await _parse_analysis(response)
-        analysis = _merge_analysis_cards(source_cards, parsed_items)
-        search_result_updated: list[SearchResultItem] = [
+    query = f"{base} 비교 분석"
+    response = await product_analysis_agent(query, user_profile=state.get("user_profile") or {})
+    # ChromaDB에서 직접 이미지 URL 포함 구조화 데이터 추출 (crawl_and_index 이후 최신 데이터 보장)
+    analysis = build_analysis_cards(base, limit=5)
+    if not analysis:
+        # fallback: LLM 텍스트 파싱 방식
+        analysis = [_normalize_purchase_product(item) or item for item in (await _parse_analysis(response) or [])]
+    return {
+        "messages": [AIMessage(content=response)],
+        "search_result": [
             {
                 "name": product_name or base,
                 "description": response,
@@ -771,69 +514,206 @@ async def product_analysis_node(state: BuyerAgentStateV2) -> dict:
                 "url": "",
                 "source": "product_analysis",
             }
-        ]
-        # 텍스트 응답 → 구조화 카드 데이터 파싱
-        return {
-            "messages": [AIMessage(content=response)],
-            "search_result": search_result_updated,
-            "analysis": analysis if analysis else None,
-            "active_agent": "product_analysis",
-            "status": "done",
-            "retry_count": 0,
-            "error": None,
-        }
-
-    except Exception as e:
-        return {
-            "messages": [
-                AIMessage(content="죄송해요, 제품 분석 중 오류가 발생했어요.")
-            ],
-            "status": "error",
-            "error": str(e),
-        }
-
-
-# =============================================================================
-# STEP 12. chitchat_node — 기존과 동일
-# =============================================================================
-
-
-async def chitchat_node(state: BuyerAgentStateV2) -> dict:
-    system_prompt = (
-        "당신은 친절한 축구화 구매 도우미입니다. "
-        "사용자의 일상 대화에 따뜻하게 응답하세요."
-    )
-    messages = [SystemMessage(content=system_prompt)] + state["messages"]
-    response = await llm.ainvoke(messages)
-    return {
-        "messages": [AIMessage(content=response.content)],
-        "active_agent": None,
+        ],
+        "analysis": analysis or None,
+        "selected_product": None,
+        "purchase_status": None,
+        "purchase_missing_fields": [],
+        "shipping_info": None,
+        "checkout_session": None,
+        "active_agent": "product_analysis",
         "status": "done",
+        "retry_count": 0,
+        "error": None,
     }
 
 
-# =============================================================================
-# STEP 13. 그래프 조립 — LangGraph Store 포함 버전
-#
-# [핵심 변경]
-#   builder.compile(checkpointer=checkpointer, store=store)
-#   → store를 추가함으로써 LangMem profile_manager가 자동으로 해당 store 사용
-#   → load_user_memory, save_user_memory 노드에 store가 자동 주입됨
-#
-# [Store 선택]
-#   로컬 개발: InMemoryStore (서버 재시작 시 초기화)
-#   프로덕션: AsyncPostgresStore 권장
-#     → pip install langgraph-checkpoint-postgres
-#     → from langgraph.store.postgres import AsyncPostgresStore
-#     → store = await AsyncPostgresStore.from_conn_string(db_url)
-#     → await store.setup()
-# =============================================================================
+async def _extract_purchase_fields(message: str, analysis: list[dict] | None) -> PurchaseExtractionResult:
+    product_lines = [
+        f"{idx}. {item.get('name')} / seller={item.get('seller')} / url={item.get('product_url') or item.get('url')}"
+        for idx, item in enumerate(analysis or [], start=1)
+    ]
+    return await _purchase_parser.ainvoke(
+        [
+            SystemMessage(
+                content=(
+                    "Extract purchase preparation fields from the latest Korean user message. "
+                    "Use product_index only when the user refers to first, second, nth item."
+                )
+            ),
+            HumanMessage(content=f"[Products]\n{chr(10).join(product_lines)}\n\n[Message]\n{message}"),
+        ]
+    )
+
+
+def _resolve_selected_product(
+    analysis: list[dict] | None, existing: dict | None, extracted: PurchaseExtractionResult
+) -> dict | None:
+    normalized_existing = _normalize_purchase_product(existing)
+    if normalized_existing:
+        return normalized_existing
+    items = analysis or []
+    if extracted.product_url:
+        for item in items:
+            if (item.get("product_url") or item.get("url")) == extracted.product_url:
+                return _normalize_purchase_product(item)
+    if extracted.product_name:
+        target = _normalize_analysis_key(extracted.product_name)
+        for item in items:
+            if _normalize_analysis_key(item.get("name")) == target:
+                return _normalize_purchase_product(item)
+    if extracted.product_index and 1 <= extracted.product_index <= len(items):
+        return _normalize_purchase_product(items[extracted.product_index - 1])
+    if len(items) == 1:
+        return _normalize_purchase_product(items[0])
+    return None
+
+
+def _merge_shipping_info(existing: dict | None, extracted: PurchaseExtractionResult) -> dict:
+    shipping_info = dict(existing or {})
+    for key in ["recipient_name", "phone", "address", "detail_address"]:
+        value = sanitize_optional_text(getattr(extracted, key))
+        if value:
+            shipping_info[key] = value
+    return shipping_info
+
+
+def _compute_purchase_missing_fields(selected_product: dict | None, shipping_info: dict | None) -> list[str]:
+    if not selected_product:
+        return ["selected_product"]
+    missing = []
+    if not sanitize_optional_text(selected_product.get("selected_size")):
+        missing.append("size")
+    shipping_info = shipping_info or {}
+    for key in ["recipient_name", "phone", "address", "detail_address"]:
+        if not sanitize_optional_text(shipping_info.get(key)):
+            missing.append(key)
+    return missing
+
+
+def _purchase_followup_question(missing_fields: list[str], analysis: list[dict] | None) -> str:
+    first = missing_fields[0]
+    if first == "selected_product":
+        options = "\n".join(
+            f"{idx}. {item.get('name')}" for idx, item in enumerate(analysis or [], start=1)
+        )
+        return (
+            "구매할 상품을 먼저 확정할게요. 몇 번째 상품으로 진행할지 알려주세요."
+            if not options
+            else f"구매할 상품을 먼저 확정할게요. 몇 번째 상품으로 진행할지 알려주세요.\n\n{options}"
+        )
+    prompts = {
+        "size": "주문할 사이즈를 알려주세요.",
+        "recipient_name": "받는 분 성함을 알려주세요.",
+        "phone": "연락처를 알려주세요.",
+        "address": "배송지 주소를 알려주세요.",
+        "detail_address": "상세 주소를 알려주세요.",
+    }
+    return prompts[first]
+
+
+async def purchase_prepare_node(state: BuyerAgentStateV2) -> dict:
+    latest_message = _last_user_message(state)
+    analysis = state.get("analysis") or []
+    extracted = await _extract_purchase_fields(latest_message, analysis)
+    selected_product = _resolve_selected_product(analysis, state.get("selected_product"), extracted)
+    shipping_info = _merge_shipping_info(state.get("shipping_info"), extracted)
+
+    if selected_product and sanitize_optional_text(extracted.size):
+        selected_product["selected_size"] = sanitize_optional_text(extracted.size)
+
+    missing_fields = _compute_purchase_missing_fields(selected_product, shipping_info)
+
+    if "selected_product" in missing_fields and not analysis:
+        return {
+            "messages": [AIMessage(content="구매할 상품을 찾지 못했어요. 먼저 분석 결과에서 상품을 골라주세요.")],
+            "active_agent": "purchase_prepare",
+            "status": "waiting_input",
+            "purchase_status": "awaiting_product_selection",
+            "purchase_missing_fields": ["selected_product"],
+            "selected_product": None,
+            "shipping_info": shipping_info or None,
+            "checkout_session": None,
+        }
+
+    if selected_product and not selected_product.get("product_url"):
+        return {
+            "messages": [AIMessage(content="선택한 상품에 product_url이 없어 주문 준비를 진행할 수 없어요.")],
+            "active_agent": "purchase_prepare",
+            "status": "error",
+            "purchase_status": "missing_product_url",
+            "purchase_missing_fields": ["selected_product"],
+            "selected_product": selected_product,
+            "shipping_info": shipping_info or None,
+            "checkout_session": None,
+            "error": "missing_product_url",
+        }
+
+    if selected_product and selected_product.get("seller") not in SUPPORTED_CHECKOUT_SELLERS:
+        seller = selected_product.get("seller") or "선택한 판매처"
+        return {
+            "messages": [AIMessage(content=f"{seller} 판매처는 아직 자동 주문 준비를 지원하지 않아요.")],
+            "active_agent": "purchase_prepare",
+            "status": "done",
+            "purchase_status": "unsupported_seller",
+            "purchase_missing_fields": [],
+            "selected_product": selected_product,
+            "shipping_info": shipping_info or None,
+            "checkout_session": None,
+        }
+
+    if missing_fields:
+        return {
+            "messages": [AIMessage(content=_purchase_followup_question(missing_fields, analysis))],
+            "active_agent": "purchase_prepare",
+            "status": "waiting_input",
+            "purchase_status": (
+                "awaiting_product_selection"
+                if missing_fields[0] == "selected_product"
+                else "awaiting_purchase_info"
+            ),
+            "purchase_missing_fields": missing_fields,
+            "selected_product": selected_product,
+            "shipping_info": shipping_info or None,
+            "checkout_session": None,
+        }
+
+    adapter = get_checkout_adapter(selected_product["seller"])
+    checkout_session = build_checkout_session_payload(
+        adapter=adapter,
+        selected_product=selected_product,
+        shipping_info=shipping_info,
+        session_id=state["session_id"],
+        user_id=state["user_id"],
+        session_token=str(uuid4()),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return {
+        "messages": [
+            AIMessage(
+                content="주문 직전 단계까지 준비됐어요. 프론트에서 checkout_session으로 브라우저 자동화를 실행하면 됩니다."
+            )
+        ],
+        "active_agent": "purchase_prepare",
+        "status": "done",
+        "purchase_status": "ready_for_checkout",
+        "purchase_missing_fields": [],
+        "selected_product": selected_product,
+        "shipping_info": shipping_info,
+        "checkout_session": checkout_session,
+        "error": None,
+    }
+
+
+async def chitchat_node(state: BuyerAgentStateV2) -> dict:
+    response = await llm.ainvoke(
+        [SystemMessage(content="당신은 축구화 구매를 돕는 한국어 챗봇입니다.")] + state["messages"]
+    )
+    return {"messages": [AIMessage(content=response.content)], "active_agent": None, "status": "done"}
 
 
 def _build_graph(checkpointer, store: BaseStore):
     builder = StateGraph(BuyerAgentStateV2)
-
-    # ── 노드 등록 ────────────────────────────────────────────────────────────
     builder.add_node("load_user_memory", load_user_memory)
     builder.add_node("extract_conditions_and_intent", extract_conditions_and_intent)
     builder.add_node("check_conditions", check_conditions)
@@ -841,14 +721,13 @@ def _build_graph(checkpointer, store: BaseStore):
     builder.add_node("product_search_node", product_search_node)
     builder.add_node("seller_search_node", seller_search_node)
     builder.add_node("product_analysis_node", product_analysis_node)
+    builder.add_node("purchase_prepare_node", purchase_prepare_node)
     builder.add_node("chitchat_node", chitchat_node)
     builder.add_node("save_user_memory", save_user_memory)
 
-    # ── 엣지 연결 ────────────────────────────────────────────────────────────
     builder.add_edge(START, "load_user_memory")
     builder.add_edge("load_user_memory", "extract_conditions_and_intent")
     builder.add_edge("extract_conditions_and_intent", "check_conditions")
-
     builder.add_conditional_edges(
         "check_conditions",
         route_after_check,
@@ -857,37 +736,23 @@ def _build_graph(checkpointer, store: BaseStore):
             "product_search_node": "product_search_node",
             "seller_search_node": "seller_search_node",
             "product_analysis_node": "product_analysis_node",
+            "purchase_prepare_node": "purchase_prepare_node",
             "chitchat_node": "chitchat_node",
         },
     )
 
-    # 저장 불필요한 노드 → END 직접 연결
     builder.add_edge("ask_missing_node", END)
-    builder.add_edge("chitchat_node", END)
-
-    # 검색/분석 노드 → save_user_memory → END
+    builder.add_edge("purchase_prepare_node", END)
+    builder.add_edge("chitchat_node", "save_user_memory")
     builder.add_edge("product_search_node", "save_user_memory")
     builder.add_edge("seller_search_node", "save_user_memory")
     builder.add_edge("product_analysis_node", "save_user_memory")
     builder.add_edge("save_user_memory", END)
-
     return builder.compile(checkpointer=checkpointer, store=store)
 
 
 async def build_graph():
-    """
-    Checkpointer + Store 초기화 후 graph 반환.
-
-    DATABASE_URL이 있으면:
-      - Checkpointer: AsyncPostgresSaver (Supabase) → 대화 이력 영구 저장
-      - Store:        AsyncPostgresStore (Supabase) → UserProfile 장기 메모리 영구 저장
-
-    DATABASE_URL이 없으면:
-      - Checkpointer: MemorySaver (메모리)
-      - Store:        InMemoryStore (메모리)
-    """
     db_url = os.environ.get("DATABASE_URL")
-
     if db_url:
         import psycopg
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -896,88 +761,14 @@ async def build_graph():
         conn = await psycopg.AsyncConnection.connect(db_url, autocommit=True)
         checkpointer = AsyncPostgresSaver(conn)
         await checkpointer.setup()
-        print("[Checkpointer] AsyncPostgresSaver (Supabase) 연결 완료")
 
-        store = AsyncPostgresStore(
-            await psycopg.AsyncConnection.connect(db_url, autocommit=True)
-        )
+        store = AsyncPostgresStore(await psycopg.AsyncConnection.connect(db_url, autocommit=True))
         await store.setup()
-        print(
-            "[Store] AsyncPostgresStore (Supabase) 연결 완료 — UserProfile 장기 저장 활성화"
-        )
     else:
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        print("[Checkpointer] MemorySaver (로컬 개발)")
-        print("[Store] InMemoryStore (로컬 개발) — 재시작 시 UserProfile 초기화")
 
     return _build_graph(checkpointer, store)
 
 
 graph = None
-
-
-# =============================================================================
-# STEP 14. 로컬 테스트
-# =============================================================================
-
-
-async def run_test():
-    g = await build_graph()
-
-    config = {"configurable": {"thread_id": "LEE:session_001"}}
-
-    print("=" * 60)
-    print("BuyerAgent LangMem 개인화 테스트")
-    print("=" * 60)
-
-    # initial_state = {
-    #     "session_id": "session_001", "user_id": "LEE",
-    #     "messages":   [HumanMessage(content="가볍고 슈팅이 좋은 나이키 10만원대 축구화 추천해줘")],
-    #     "intent": "", "active_agent": None,
-    #     "user_conditions": {}, "missing_conditions": [],
-    #     "search_result": [], "status": "extracting",
-    #     "error": None, "retry_count": 0,
-    #     "user_profile": None,  # None → load_user_memory 실행 트리거
-    # }
-
-    # print("\n[1턴] 제품 추천 + 첫 턴 메모리 로드")
-    # result = await g.ainvoke(initial_state, config=config)
-    # print(f"user_profile:    {result.get('user_profile')}")
-    # print(f"user_conditions: {result['user_conditions']}")
-    # print(f"응답 미리보기: {result['messages'][-1].content[:150]}...")
-
-    # print("\n[2턴] 비정형 정보 추가 (LangMem 추출 확인)")
-    # result2 = await g.ainvoke(
-    #     {"messages": [HumanMessage(content="발볼이 좀 넓은 편이고 공격수야!")]},
-    #     config=config,
-    # )
-    # print(f"user_profile:    {result2.get('user_profile')}")
-    # print(f"  → physical_traits: {result2.get('user_profile', {}).get('physical_traits')}")
-    # print(f"응답 미리보기: {result2['messages'][-1].content[:150]}...")
-
-    print("\n[3턴] 비정형 정보 추가 (LangMem 추출 확인)")
-    result2 = await g.ainvoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="크레이지11에서 나이키 머큐리얼 베이퍼 성인용 TF 10만원대 비교해줘"
-                )
-            ]
-        },
-        config=config,
-    )
-    print(f"user_profile:    {result2.get('user_profile')}")
-    print(
-        f"  → physical_traits: {result2.get('user_profile', {}).get('physical_traits')}"
-    )
-    print(f"응답 미리보기: {result2['messages'][-1].content[:150]}...")
-
-
-if __name__ == "__main__":
-    import asyncio
-    import sys
-
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run_test())
