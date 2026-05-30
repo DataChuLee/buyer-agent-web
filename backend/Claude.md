@@ -96,15 +96,9 @@ flowchart TD
 - `Userprofile/` → 유저 프로필 관리
 - `Test/` → 테스트
 
-## Key Environment Variables
-`.env` 파일 필요:
-- `ANTHROPIC_API_KEY`
-- `FIRECRAWL_API_KEY`
 
 ## Conventions
-- 최신 파일명에 날짜 suffix 없음 (e.g., `sub_agent.py`가 최신, `sub_agent_0310.py`는 구버전)
 - 한국어 주석 사용
-- 날짜 suffix 파일은 건드리지 말 것
 
 ## 자동 업데이트 규칙 (필수)
 작업이 끝날 때마다 반드시 아래 두 파일을 업데이트할 것:
