@@ -9,6 +9,8 @@ backend/venv/
 backend/.env
 backend/__pycache__/
 backend/**/*.pyc
+backend/stagehand/.env
+
 
 # -----------------------------
 # Frontend (Next.js / Node)
