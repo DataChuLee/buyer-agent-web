@@ -14,8 +14,13 @@ load_dotenv()
 SMITHERY_API_KEY = os.environ.get("SMITHERY_API_KEY", "")
 NAMESPACE = "stingray-C7LG"  # smithery namespace
 CONNECTION_ID = "exa"  # smithery connectionId (Exa MCP ID)
+EXA_ENABLED_TOOLS = "web_search_exa,web_search_advanced_exa,web_fetch_exa"
 
-ALLOWED_TOOL_NAMES = {"web_search_exa", "sequentialthinking"}
+ALLOWED_TOOL_NAMES = {
+    "web_search_exa",
+    "web_search_advanced_exa",
+    "sequentialthinking",
+}
 
 
 def get_npx_command() -> str:
@@ -31,7 +36,10 @@ def build_mcp_client() -> MultiServerMCPClient:
         {
             "exa": {
                 "transport": "streamable_http",
-                "url": f"https://api.smithery.ai/connect/{NAMESPACE}/{CONNECTION_ID}/mcp",
+                "url": (
+                    f"https://api.smithery.ai/connect/{NAMESPACE}/{CONNECTION_ID}/mcp"
+                    f"?tools={EXA_ENABLED_TOOLS}"
+                ),
                 "headers": {
                     "Authorization": f"Bearer {SMITHERY_API_KEY}",
                     "Content-Type": "application/json",
@@ -76,7 +84,9 @@ async def get_search_mcp_tools():
             seq_session = await stack.enter_async_context(
                 client.session("sequential_thinking")
             )
-            seq_tools = await load_mcp_tools(seq_session, server_name="sequential_thinking")
+            seq_tools = await load_mcp_tools(
+                seq_session, server_name="sequential_thinking"
+            )
             tools.extend(seq_tools)
         except Exception:
             pass  # sequential_thinking 실패 시 exa만으로 진행
