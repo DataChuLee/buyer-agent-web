@@ -29,20 +29,16 @@ AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.abspath(os.path.join(AGENT_DIR, ".."))
 TOOLS_DIR = os.path.join(BACKEND_DIR, "Tools")
 
-# Tools/ 를 먼저 추가 → crawl_and_index, rag_search 모두 단순 이름으로 import
-# 같은 sys.modules 키를 공유해야 vectorstore 인스턴스가 하나로 유지됨
+# Tools/, backend/ 를 sys.path 에 추가
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.append(BACKEND_DIR)
 
 # ── Tools import ────────────────────────────────────────────
+# vectorstore_singleton 덕분에 import 경로와 무관하게 동일 인스턴스를 공유함.
+# sys.modules alias 해킹 불필요.
 from Tools.rag_search import rag_search
-
-# crawl_and_index.py 내부에서 "from rag_search import vectorstore" 를 하는데,
-# 이때 sys.modules["rag_search"] 가 없으면 새 모듈(새 vectorstore)을 생성해버림.
-# Tools.rag_search 와 rag_search 가 같은 인스턴스를 가리키도록 alias 등록.
-sys.modules["rag_search"] = sys.modules["Tools.rag_search"]
 from Tools.crawl_and_index import crawl_and_index
 
 # ── LLM ─────────────────────────────────────────────────────
@@ -57,6 +53,7 @@ SYSTEM_PROMPT = """
 1. crawl_and_index
    - 지정한 판매처에서 실시간으로 축구화를 크롤링하고 인덱싱합니다.
    - 지원 판매처 (sellers 파라미터): crazy11, soccerboom, redsoccer, cafostore
+    - sellers 파라미터는 리스트 형식으로 전달해야 합니다. -> sellers: list[str] -> ["crazy11", "soccerboom"] 형태로 전달
    - 사용자가 한국어 판매처명을 말해도 영문으로 변환하세요:
      크레이지11 → crazy11 / 사커붐 → soccerboom / 레드사커 → redsoccer / 카포스토어 → cafostore
 
@@ -80,6 +77,11 @@ SYSTEM_PROMPT = """
 4️⃣ 비교표 반환
 
 ⚠️ 반드시 crawl_and_index → rag_search 순서로 호출하세요.
+
+🚫 rag_search 쿼리 금지 사항:
+- 사용자가 명시하지 않은 조건(FG, AG, TF, 축구화, 풋살화 등)을 임의로 추가하지 마세요.
+- 사용자 원문에 없는 조건을 추가하면 검색 결과가 의도치 않게 필터링됩니다.
+- 예) 사용자가 "머큐리얼 베이퍼 10만원대"라고 했으면 → "머큐리얼 베이퍼 10만원대"만 전달.
 """
 
 # ── Agent 구성 ───────────────────────────────────────────────
