@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
-from langchain_chroma import Chroma
 from langchain_classic.chains.query_constructor.base import (
     StructuredQueryOutputParser,
     get_query_constructor_prompt,
@@ -26,7 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -47,10 +46,13 @@ load_dotenv()
 
 # ── 모델 & 임베딩 ───────────────────────────────────────────
 model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-embedding = OpenAIEmbeddings(model="text-embedding-3-small")
 
 # ── Shared Vectorstore (crawl_and_index 도구가 upsert, graph가 검색) ──
-vectorstore = Chroma(embedding_function=embedding)
+# singleton 모듈에서 가져와 import 경로 차이로 인한 인스턴스 분리 방지
+try:
+    from Tools.vectorstore_singleton import vectorstore
+except ImportError:
+    from vectorstore_singleton import vectorstore
 
 # ── SelfQueryRetriever 설정 ─────────────────────────────────
 metadata_info = [
