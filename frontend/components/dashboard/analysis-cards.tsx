@@ -110,7 +110,7 @@ export default function AnalysisCards({ analysis }: AnalysisCardsProps) {
                 </div>
 
                 {/* Features */}
-                {item.features.length > 0 && (
+                {(item.features?.length ?? 0) > 0 && (
                   <ul className="flex flex-1 flex-col gap-1.5">
                     {item.features.map((feature, i) => (
                       <li key={i} className="flex items-start gap-2 text-[12px] leading-relaxed text-slate-400">
