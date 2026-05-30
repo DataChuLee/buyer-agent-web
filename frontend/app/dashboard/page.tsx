@@ -11,7 +11,18 @@ import SellerCards from "@/components/dashboard/seller-cards";
 import PromptArea from "@/components/dashboard/prompt-area";
 import RequirementChoices from "@/components/dashboard/requirement-choices";
 import AgentProgress, { AgentStep } from "@/components/dashboard/agent-progress";
+import PurchaseAutomationCard from "@/components/dashboard/purchase-automation-card";
+import PurchaseApprovalModal from "@/components/dashboard/purchase-approval-modal";
 import { cn } from "@/lib/utils";
+import {
+  approveLocalAutomation,
+  cancelLocalAutomation,
+  getLocalAutomationRun,
+  isAwaitingFinalApproval,
+  startLocalAutomation,
+  type CheckoutSession,
+  type LocalAutomationRun,
+} from "@/lib/purchase-automation";
 
 type ProductItem = {
   name: string;
@@ -24,6 +35,7 @@ type ProductItem = {
 type SellerItem = {
   name: string;
   description: string;
+  why_recommended?: string | null;
   url?: string | null;
 };
 
@@ -45,6 +57,9 @@ type ChatMessage = {
   products?: ProductItem[] | null;
   sellers?: SellerItem[] | null;
   analysis?: AnalysisItem[] | null;
+  purchaseStatus?: string | null;
+  checkoutSession?: CheckoutSession | null;
+  requiredFields?: string[] | null;
   pending?: boolean;
   error?: boolean;
   progressSteps?: AgentStep[] | null;
@@ -107,12 +122,22 @@ export default function DashboardPage() {
   const [historyReady, setHistoryReady] = useState(false);
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeAutomationMessageId, setActiveAutomationMessageId] = useState<string | null>(null);
+  const [localAutomationRun, setLocalAutomationRun] = useState<LocalAutomationRun | null>(null);
+  const [localAutomationPending, setLocalAutomationPending] = useState(false);
+  const [localApprovalPending, setLocalApprovalPending] = useState(false);
+  const [localAutomationError, setLocalAutomationError] = useState<string | null>(null);
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const automationPollTimeoutRef = useRef<number | null>(null);
 
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
   const chatMessages = activeConversation?.messages ?? [];
   const hasConversation = chatMessages.length > 0;
+  const activeAutomationMessage =
+    chatMessages.find((message) => message.id === activeAutomationMessageId) ?? null;
+  const activeAutomationCheckoutSession = activeAutomationMessage?.checkoutSession ?? null;
 
   useEffect(() => {
     if (!loading && !isAuthenticated) {
@@ -207,6 +232,29 @@ export default function DashboardPage() {
     };
   }, [mobileSidebarOpen]);
 
+  const clearAutomationPolling = () => {
+    if (automationPollTimeoutRef.current !== null) {
+      window.clearTimeout(automationPollTimeoutRef.current);
+      automationPollTimeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearAutomationPolling();
+    };
+  }, []);
+
+  useEffect(() => {
+    clearAutomationPolling();
+    setActiveAutomationMessageId(null);
+    setLocalAutomationRun(null);
+    setLocalAutomationPending(false);
+    setLocalApprovalPending(false);
+    setLocalAutomationError(null);
+    setApprovalModalOpen(false);
+  }, [activeConversationId]);
+
   const handleSignOut = async () => {
     try {
       setAuthError(null);
@@ -280,6 +328,96 @@ export default function DashboardPage() {
 
   const handleStop = () => {
     abortControllerRef.current?.abort();
+  };
+
+  const pollLocalAutomationRun = async (runId: string) => {
+    try {
+      const run = await getLocalAutomationRun(runId);
+      setLocalAutomationRun(run);
+      if (isAwaitingFinalApproval(run)) {
+        setApprovalModalOpen(true);
+      }
+      if (run.status === "running") {
+        automationPollTimeoutRef.current = window.setTimeout(() => {
+          void pollLocalAutomationRun(runId);
+        }, 1500);
+      }
+    } catch (err) {
+      setLocalAutomationError(
+        err instanceof Error ? err.message : "로컬 자동화 상태를 가져오지 못했습니다.",
+      );
+    }
+  };
+
+  const handleStartAutomation = async (
+    messageId: string,
+    checkoutSession: CheckoutSession,
+  ) => {
+    clearAutomationPolling();
+    setActiveAutomationMessageId(messageId);
+    setLocalAutomationPending(true);
+    setLocalAutomationError(null);
+    setLocalAutomationRun(null);
+
+    try {
+      const run = await startLocalAutomation(checkoutSession);
+      setLocalAutomationRun(run);
+      if (isAwaitingFinalApproval(run)) {
+        setApprovalModalOpen(true);
+      }
+      if (run.status === "running") {
+        automationPollTimeoutRef.current = window.setTimeout(() => {
+          void pollLocalAutomationRun(run.id);
+        }, 1500);
+      }
+    } catch (err) {
+      setLocalAutomationError(
+        err instanceof Error ? err.message : "로컬 자동화 워커를 시작하지 못했습니다.",
+      );
+    } finally {
+      setLocalAutomationPending(false);
+    }
+  };
+
+  const handleApproveAutomation = async () => {
+    if (!localAutomationRun) {
+      return;
+    }
+
+    setLocalApprovalPending(true);
+    setLocalAutomationError(null);
+    try {
+      const run = await approveLocalAutomation(localAutomationRun.id);
+      setLocalAutomationRun(run);
+      setApprovalModalOpen(false);
+    } catch (err) {
+      setLocalAutomationError(
+        err instanceof Error ? err.message : "최종 승인 요청에 실패했습니다.",
+      );
+    } finally {
+      setLocalApprovalPending(false);
+    }
+  };
+
+  const handleCancelAutomation = async () => {
+    if (!localAutomationRun) {
+      return;
+    }
+
+    clearAutomationPolling();
+    setLocalApprovalPending(true);
+    setLocalAutomationError(null);
+    try {
+      const run = await cancelLocalAutomation(localAutomationRun.id);
+      setLocalAutomationRun(run);
+      setApprovalModalOpen(false);
+    } catch (err) {
+      setLocalAutomationError(
+        err instanceof Error ? err.message : "자동 주문 취소에 실패했습니다.",
+      );
+    } finally {
+      setLocalApprovalPending(false);
+    }
   };
 
   const handlePromptSubmit = async (payload: {
@@ -372,6 +510,9 @@ export default function DashboardPage() {
             products?: ProductItem[] | null;
             sellers?: SellerItem[] | null;
             analysis?: AnalysisItem[] | null;
+            purchase_status?: string | null;
+            checkout_session?: CheckoutSession | null;
+            required_fields?: string[] | null;
           };
           try {
             event = JSON.parse(part.slice(6).trim()) as typeof event;
@@ -448,6 +589,9 @@ export default function DashboardPage() {
                                 products: event.products ?? null,
                                 sellers: event.sellers ?? null,
                                 analysis: event.analysis ?? null,
+                                purchaseStatus: event.purchase_status ?? null,
+                                checkoutSession: event.checkout_session ?? null,
+                                requiredFields: event.required_fields ?? null,
                                 pending: false,
                                 progressSteps: null,
                               }
@@ -630,69 +774,108 @@ export default function DashboardPage() {
               /* ── Chat messages ── */
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="flex-1 overflow-y-auto pb-44 pt-6">
-                  <div className="mx-auto w-full max-w-3xl space-y-6 px-2">
+                  <div className="mx-auto w-full max-w-5xl space-y-6 px-2">
                     {chatMessages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`flex items-end gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
-                      >
-                        {/* Agent avatar */}
-                        {message.role === "assistant" && (
-                          <div className="mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 shadow-md">
-                            <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                          </div>
-                        )}
+                      (() => {
+                        const isActiveAutomationMessage = message.id === activeAutomationMessageId;
+                        const messageRun = isActiveAutomationMessage ? localAutomationRun : null;
+                        const messageAutomationError = isActiveAutomationMessage ? localAutomationError : null;
+                        const messageAutomationPending = isActiveAutomationMessage ? localAutomationPending : false;
 
-                        <div className={message.role === "user" ? "max-w-[78%] md:max-w-[65%]" : "min-w-0 max-w-[84%]"}>
-                          {message.role === "user" ? (
-                            <div className="rounded-2xl rounded-br-md bg-white/[0.1] px-4 py-3 text-[15px] leading-relaxed text-white ring-1 ring-white/[0.06]">
-                              {message.content}
+                        return (
+                          <div
+                            key={message.id}
+                            className={`flex items-end gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                          >
+                            {message.role === "assistant" && (
+                              <div className="mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 shadow-md">
+                                <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              </div>
+                            )}
+
+                            <div className={message.role === "user" ? "max-w-[78%] md:max-w-[65%]" : "min-w-0 max-w-[84%] space-y-4"}>
+                              {message.role === "user" ? (
+                                <div className="rounded-2xl rounded-br-md bg-white/[0.1] px-4 py-3 text-[15px] leading-relaxed text-white ring-1 ring-white/[0.06]">
+                                  {message.content}
+                                </div>
+                              ) : message.pending && message.progressSteps !== null ? (
+                                <div className="rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3 ring-1 ring-white/[0.06]">
+                                  <AgentProgress steps={message.progressSteps ?? []} />
+                                </div>
+                              ) : message.pending ? (
+                                <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-white/90">
+                                  {message.content}
+                                  <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-white/60 align-middle" />
+                                </div>
+                              ) : message.options && message.options.length > 0 ? (
+                                <RequirementChoices
+                                  question={message.content}
+                                  options={message.options}
+                                  onSelect={questionSequence ? handleConditionSelect : (option) =>
+                                    handlePromptSubmit({ message: option, imagePreview: null, selectedTool: null })
+                                  }
+                                  disabled={pendingPrompt}
+                                />
+                              ) : (
+                                <>
+                                  {message.content ? (
+                                    <div
+                                      className={`whitespace-pre-wrap text-[15px] leading-relaxed ${
+                                        message.error
+                                          ? "rounded-xl bg-rose-500/10 px-4 py-3 text-rose-300 ring-1 ring-rose-500/20"
+                                          : "text-white/90"
+                                      }`}
+                                    >
+                                      {message.content}
+                                    </div>
+                                  ) : null}
+
+                                  {message.products && message.products.length > 0 ? (
+                                    <div className="w-full">
+                                      <ProductCards products={message.products} />
+                                    </div>
+                                  ) : null}
+
+                                  {message.sellers && message.sellers.length > 0 ? (
+                                    <div className="w-full">
+                                      <SellerCards sellers={message.sellers} />
+                                    </div>
+                                  ) : null}
+
+                                  {message.analysis && message.analysis.length > 0 ? (
+                                    <div className="w-full">
+                                      <AnalysisCards analysis={message.analysis} />
+                                    </div>
+                                  ) : null}
+
+                                  {message.checkoutSession ? (
+                                    <div className="w-full">
+                                      <PurchaseAutomationCard
+                                        purchaseStatus={message.purchaseStatus}
+                                        checkoutSession={message.checkoutSession}
+                                        run={messageRun}
+                                        pending={messageAutomationPending}
+                                        errorMessage={messageAutomationError}
+                                        onStart={() => handleStartAutomation(message.id, message.checkoutSession!)}
+                                        onOpenApproval={() => {
+                                          setActiveAutomationMessageId(message.id);
+                                          setApprovalModalOpen(true);
+                                        }}
+                                        onCancel={() => {
+                                          setActiveAutomationMessageId(message.id);
+                                          void handleCancelAutomation();
+                                        }}
+                                      />
+                                    </div>
+                                  ) : null}
+                                </>
+                              )}
                             </div>
-                          ) : message.pending && message.progressSteps !== null ? (
-                            <div className="rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3 ring-1 ring-white/[0.06]">
-                              <AgentProgress steps={message.progressSteps ?? []} />
-                            </div>
-                          ) : message.pending ? (
-                            <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-white/90">
-                              {message.content}
-                              <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-white/60 align-middle" />
-                            </div>
-                          ) : message.options && message.options.length > 0 ? (
-                            <RequirementChoices
-                              question={message.content}
-                              options={message.options}
-                              onSelect={questionSequence ? handleConditionSelect : (option) =>
-                                handlePromptSubmit({ message: option, imagePreview: null, selectedTool: null })
-                              }
-                              disabled={pendingPrompt}
-                            />
-                          ) : message.products && message.products.length > 0 ? (
-                            <div className="w-full">
-                              <ProductCards products={message.products} />
-                            </div>
-                          ) : message.sellers && message.sellers.length > 0 ? (
-                            <div className="w-full">
-                              <SellerCards sellers={message.sellers} />
-                            </div>
-                          ) : message.analysis && message.analysis.length > 0 ? (
-                            <div className="w-full">
-                              <AnalysisCards analysis={message.analysis} />
-                            </div>
-                          ) : (
-                            <div
-                              className={`whitespace-pre-wrap text-[15px] leading-relaxed ${
-                                message.error
-                                  ? "rounded-xl bg-rose-500/10 px-4 py-3 text-rose-300 ring-1 ring-rose-500/20"
-                                  : "text-white/90"
-                              }`}
-                            >
-                              {message.content}
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                          </div>
+                        );
+                      })()
                     ))}
                     <div ref={chatEndRef} />
                   </div>
@@ -720,6 +903,20 @@ export default function DashboardPage() {
           </section>
         </div>
       </div>
+
+      <PurchaseApprovalModal
+        open={approvalModalOpen}
+        checkoutSession={activeAutomationCheckoutSession}
+        run={localAutomationRun}
+        approvalPending={localApprovalPending}
+        onApprove={() => {
+          void handleApproveAutomation();
+        }}
+        onCancel={() => {
+          void handleCancelAutomation();
+        }}
+        onClose={() => setApprovalModalOpen(false)}
+      />
     </main>
   );
 }
