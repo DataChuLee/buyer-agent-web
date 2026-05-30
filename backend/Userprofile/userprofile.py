@@ -62,35 +62,3 @@ def init_profile_manager(thread_id: str):
         enable_inserts=False,  # Update existing profile only
     )
     return store, manager
-
-
-# # memory manager
-# PROFILE_STORE, PROFILE_MANAGER = init_profile_manager(thread_id="bootstrap")
-# PROFILE_MANAGER._store = PROFILE_STORE  # LangGraph runtime outside 대응
-
-
-# def _memory_config(thread_id: str) -> dict:
-#     return {"configurable": {"thread_id": thread_id}}
-
-
-# def _profile_to_text(items) -> str:
-#     if not items:
-#         return "- 저장된 선호 정보 없음"
-#     lines = []
-#     for it in items[:5]:
-#         value = getattr(it, "value", {})
-#         content = value.get("content", value) if isinstance(value, dict) else value
-#         if isinstance(content, dict):
-#             for k, v in content.items():
-#                 if v:
-#                     lines.append(f"- {k}: {v}")
-#     return "\n".join(lines) if lines else "- 저장된 선호 정보 없음"
-
-
-# async def get_profile_context(question: str, thread_id: str) -> str:
-#     items = await PROFILE_MANAGER.asearch(
-#         query=question,
-#         limit=5,
-#         config=_memory_config(thread_id),
-#     )
-#     return _profile_to_text(items)
