@@ -17,6 +17,23 @@ from langchain_core.tools import tool
 
 load_dotenv()
 
+# =============================================================================
+# 전역 인덱싱 레지스트리
+# 서버 프로세스 생존 동안 유효. 재시작 시 vectorstore(in-memory)와 함께 초기화됨.
+# 세션이 달라도 동일 (판매자+키워드+가격) 조합 재크롤 방지.
+# =============================================================================
+_CRAWL_INDEX_REGISTRY: set[str] = set()
+
+
+def _registry_key(sellers: list[str], keyword: str, min_price: int, max_price: int) -> str:
+    sellers_sorted = ",".join(sorted(s.strip() for s in sellers if s.strip()))
+    return f"{sellers_sorted}|{keyword}|{min_price}|{max_price}"
+
+
+def is_already_indexed(sellers: list[str], keyword: str, min_price: int, max_price: int) -> bool:
+    """동일 조건으로 이미 크롤·인덱싱된 적 있는지 확인 (전역, 세션 무관)."""
+    return _registry_key(sellers, keyword, min_price, max_price) in _CRAWL_INDEX_REGISTRY
+
 try:
     from Tools.seller_normalization import (
         normalize_seller_crawler,
@@ -25,7 +42,10 @@ try:
 except ImportError:
     from seller_normalization import normalize_seller_crawler, normalize_seller_display
 
-from rag_search import vectorstore
+try:
+    from Tools.vectorstore_singleton import vectorstore
+except ImportError:
+    from vectorstore_singleton import vectorstore
 
 SELLER_INPUT_MAP = {
     "crazy11": "크레이지11",
@@ -123,23 +143,29 @@ def item_to_document(item: dict[str, Any]) -> Document:
 
 @tool
 async def crawl_and_index(
-    sellers: str, product_keyword: str, min_price: int, max_price: int
+    sellers: list[str], product_keyword: str, min_price: int, max_price: int
 ) -> str:
     """
     Crawl products from the requested sellers and upsert them into the shared
     vectorstore before rag_search runs.
     """
 
+    # 전역 레지스트리 확인 — 이미 인덱싱된 조합이면 재크롤 생략
+    if is_already_indexed(sellers, product_keyword, min_price, max_price):
+        print(f"[전역 레지스트리 HIT] 재크롤 생략 | sellers={sellers}, keyword={product_keyword}, price={min_price}~{max_price}")
+        return f"이미 인덱싱된 데이터가 있습니다. 재크롤 생략 (sellers={sellers}, keyword={product_keyword})."
+
     from Crawling.seller_total_test import crawl_multiple_sellers
 
     seller_list = [
-        normalize_seller_crawler(seller) for seller in sellers.split(",") if seller.strip()
+        normalize_seller_crawler(seller) for seller in sellers if seller.strip()
     ]
     result = await crawl_multiple_sellers(
         sellers=seller_list,
         product_keyword=product_keyword,
         min_price=min_price,
         max_price=max_price,
+        seller_parallelism=len(seller_list),  # 판매자 수만큼 동시 크롤
     )
 
     items = result["items"]
@@ -154,6 +180,9 @@ async def crawl_and_index(
         for document in docs
     ]
     vectorstore.add_documents(docs, ids=ids)
+
+    # 성공 시 전역 레지스트리에 등록
+    _CRAWL_INDEX_REGISTRY.add(_registry_key(sellers, product_keyword, min_price, max_price))
 
     seller_counts: dict[str, int] = {}
     for item in items:
@@ -174,7 +203,7 @@ if __name__ == "__main__":
     async def test():
         result = await crawl_and_index.ainvoke(
             {
-                "sellers": "crazy11",
+                "sellers": ["crazy11"],
                 "product_keyword": "나이키 머큐리얼 베이퍼",
                 "min_price": 100000,
                 "max_price": 200000,
