@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import asyncio
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,6 +15,15 @@ from dotenv import load_dotenv
 
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.abspath(os.path.join(AGENT_DIR, ".."))
+
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+from Tools.web_search_cache import cached_web_search
+
+# product search: 6h, seller search: 24h
+_PRODUCT_SEARCH_TTL = 6 * 3600
+_SELLER_SEARCH_TTL = 24 * 3600
 
 
 load_dotenv()
@@ -72,18 +82,22 @@ async def _mcp_product_search_inner(query: str, system_prompt: str) -> str:
         @tool("web_search_advanced_exa")
         async def web_search_advanced_exa(query: str) -> str:
             """Search only the four supported seller domains (crazy11, soccerboom, redsoccer, cafostore) with a Korean query."""
-            result = await advanced_search_tool.ainvoke(
-                {
-                    "query": query,
-                    "type": "auto",
-                    "numResults": 5,
-                    "includeDomains": PRODUCT_SEARCH_INCLUDE_DOMAINS,
-                }
-            )
-            return (
-                result
-                if isinstance(result, str)
-                else json.dumps(result, ensure_ascii=False)
+
+            async def _fetch() -> Any:
+                return await advanced_search_tool.ainvoke(
+                    {
+                        "query": query,
+                        "type": "auto",
+                        "numResults": 5,
+                        "includeDomains": PRODUCT_SEARCH_INCLUDE_DOMAINS,
+                    }
+                )
+
+            return await cached_web_search(
+                tool_name="exa_product",
+                query=query,
+                ttl_seconds=_PRODUCT_SEARCH_TTL,
+                fetch_fn=_fetch,
             )
 
         product_tools = [web_search_advanced_exa, *sequential_tools]
@@ -400,18 +414,22 @@ async def _mcp_seller_search_inner(query: str, system_prompt: str) -> str:
         @tool("web_search_advanced_exa")
         async def web_search_advanced_exa(query: str) -> str:
             """Search only the four supported seller domains (crazy11, soccerboom, redsoccer, cafostore) for seller info."""
-            result = await advanced_search_tool.ainvoke(
-                {
-                    "query": query,
-                    "type": "auto",
-                    "numResults": 5,
-                    "includeDomains": PRODUCT_SEARCH_INCLUDE_DOMAINS,
-                }
-            )
-            return (
-                result
-                if isinstance(result, str)
-                else json.dumps(result, ensure_ascii=False)
+
+            async def _fetch() -> Any:
+                return await advanced_search_tool.ainvoke(
+                    {
+                        "query": query,
+                        "type": "auto",
+                        "numResults": 5,
+                        "includeDomains": PRODUCT_SEARCH_INCLUDE_DOMAINS,
+                    }
+                )
+
+            return await cached_web_search(
+                tool_name="exa_seller",
+                query=query,
+                ttl_seconds=_SELLER_SEARCH_TTL,
+                fetch_fn=_fetch,
             )
 
         seller_tools = [web_search_advanced_exa, *sequential_tools]

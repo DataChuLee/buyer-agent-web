@@ -93,8 +93,13 @@ def _looks_like_size(token: str) -> bool:
     if any(word in lower for word in bad_words):
         return False
 
+    # 순수 3자리 숫자는 신발 사이즈로 말이 되는 범위(200~330mm)일 때만 인정한다 — 그렇지 않으면
+    # 상세 페이지 텍스트/XHR 응답에 섞인 상품코드・리뷰 수 같은 무관한 3자리 숫자(예: 139, 143)까지
+    # 사이즈로 오인식된다(레드사커에서만 실사용 재현: 139/143/155/159/169가 정상 사이즈와 함께 노출).
+    if re.match(r"^\d{3}$", token):
+        return 200 <= int(token) <= 330
+
     patterns = [
-        r"^\d{3}$",  # 220, 225, 230...
         r"^\d{2,3}mm$",  # 270mm
         r"^(?:US|UK|EU)\s?\d+(?:\.\d+)?$",
         r"^\d{2,3}/\d{2,3}$",
@@ -280,8 +285,12 @@ async def _extract_sizes_in_browser_context(page: Page) -> list[str]:
                     const bad = ['옵션','선택','choose','필수','재고수량','무제한','품절','sold out','장바구니','바로구매','총 상품금액','색상'];
                     const lower = s.toLowerCase();
                     if (bad.some(x => lower.includes(x))) return false;
+                    // 순수 3자리 숫자는 신발 사이즈 범위(200~330mm)일 때만 인정 (Python _looks_like_size와 동일 기준)
+                    if (/^\\d{3}$/.test(s)) {
+                        const n = parseInt(s, 10);
+                        return n >= 200 && n <= 330;
+                    }
                     return (
-                        /^\\d{3}$/.test(s) ||
                         /^\\d{2,3}mm$/i.test(s) ||
                         /^(US|UK|EU)\\s?\\d+(?:\\.\\d+)?$/i.test(s) ||
                         /^\\d{2,3}\\/\\d{2,3}$/.test(s)
@@ -453,8 +462,15 @@ async def _collect_products_from_page(
             if "mk_prd_option_preview(" in onclick and not preview_onclick:
                 preview_onclick = onclick
 
-        detail_url = urljoin(BASE_URL, detail_href) if detail_href else ""
         branduid = _extract_branduid(preview_onclick) or _extract_branduid(detail_href)
+        # 정답 경로는 /shop/shopdetail.html. 검색결과 href 가 /shop/ 누락된 채로 추출되어
+        # urljoin 결과가 204 응답을 주는 케이스 방지 — branduid 가 있으면 직접 재구성.
+        if branduid:
+            detail_url = f"{BASE_URL}/shop/shopdetail.html?branduid={branduid}"
+        elif detail_href:
+            detail_url = urljoin(BASE_URL, detail_href)
+        else:
+            detail_url = ""
 
         image_url = ""
         imgs = row.locator("img")
