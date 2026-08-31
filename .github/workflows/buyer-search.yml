@@ -32,7 +32,7 @@ jobs:
       LANGCHAIN_TRACING_V2: "false"
       LANGSMITH_TRACING: "false"
       PYTHONDONTWRITEBYTECODE: "1"
-      CHROMA_PERSIST_DIR: ${{ runner.temp }}/buyer-search-cache
+      CHROMA_PERSIST_DIR: /tmp/buyer-search-cache
 
     defaults:
       run:
