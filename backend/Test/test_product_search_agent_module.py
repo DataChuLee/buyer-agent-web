@@ -18,7 +18,6 @@ from Agent.product_search_agent import (
     SERIES_DESCRIPTIONS,
     SERIES_PATTERNS,
     build_product_search_pipeline_result,
-    build_product_search_query,
     build_product_search_fallback_answer,
     build_tavily_product_search_query,
     build_recommendation_reason,
@@ -28,8 +27,6 @@ from Agent.product_search_agent import (
     extract_series_name,
     filter_normalized_products,
     filter_tavily_candidates,
-    format_tavily_price_diagnostics,
-    format_unfiltered_tavily_results,
     is_no_result_answer,
     parse_product_markdown_table,
     run_product_search_pipeline,
@@ -53,23 +50,6 @@ class ProductSearchAgentModuleTest(unittest.TestCase):
         self.assertEqual(PRODUCT_SEARCH_DOMAIN_LABELS["capostore.co.kr"], "카포스토어")
         self.assertNotIn("cafostore.co.kr", PRODUCT_SEARCH_DOMAINS)
 
-    def test_build_product_search_query_keeps_series_search_terms(self):
-        query = build_product_search_query(
-            {
-                "brand": "나이키",
-                "budget": "10만원대",
-                "surface": "FG",
-                "position": "공격수",
-            },
-            rejected_series=["티엠포"],
-        )
-
-        self.assertIn("나이키", query)
-        self.assertIn("10만원대", query)
-        self.assertIn("FG", query)
-        self.assertIn("축구화 풋살화 시리즈 추천", query)
-        self.assertIn("티엠포 제외", query)
-        self.assertNotIn("270", query)
 
     def test_tavily_query_does_not_force_price_when_budget_missing(self):
         query = build_tavily_product_search_query("발볼 넓은 나이키 축구화 추천")
@@ -407,38 +387,6 @@ class ProductSearchAgentModuleTest(unittest.TestCase):
         )
         self.assertIn(SERIES_DESCRIPTIONS["머큐리얼 베이퍼"], reason)
 
-    def test_unfiltered_and_diagnostic_formatters_keep_debug_views(self):
-        raw = format_unfiltered_tavily_results(
-            [
-                {
-                    "title": "나이키 머큐리얼 베이퍼",
-                    "url": "https://soccerboom.co.kr/item",
-                    "content": "시리즈 소개",
-                }
-            ]
-        )
-        diagnostics = format_tavily_price_diagnostics(
-            "나이키 10만원대 FG 축구화 추천",
-            [
-                {
-                    "title": "나이키 팬텀 FG",
-                    "url": "https://redsoccer.co.kr/item",
-                    "content": "판매가 : 150,000원",
-                },
-                {
-                    "title": "나이키 머큐리얼 AG",
-                    "url": "https://soccerboom.co.kr/item",
-                    "content": "판매가 : 250,000원",
-                },
-            ],
-        )
-
-        self.assertIn("가격 필터를 적용하지 않은 Tavily 원본 결과", raw)
-        self.assertIn("RAW: 아무 필터도 적용하지 않은 Tavily 원본", diagnostics)
-        self.assertIn("PRICE_FILTERED: 요청 가격대 통과 결과", diagnostics)
-        filtered_section = diagnostics.split("PRICE_FILTERED: 요청 가격대 통과 결과", 1)[1]
-        self.assertIn("나이키 팬텀 FG", filtered_section)
-        self.assertNotIn("나이키 머큐리얼 AG", filtered_section)
 
     def test_series_filter_rejects_sibling_series_when_series_requested(self):
         items = [
