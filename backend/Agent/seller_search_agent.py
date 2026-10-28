@@ -28,9 +28,6 @@ from Tools.seller_selection import (
 )
 
 
-SELLER_DOMAINS = list(DOMAIN_TO_SELLER)
-
-
 def _split_markdown_row(line: str) -> list[str]:
     stripped = str(line or "").strip()
     if not stripped.startswith("|") or not stripped.endswith("|"):
@@ -177,19 +174,6 @@ def parse_seller_markdown_table(text: str) -> list[dict]:
     if blocks := _parse_seller_prose_blocks(text):
         return blocks
     return _parse_seller_legacy_table(text)
-
-
-_NO_SELLER_RESULT_PHRASES = (
-    "판매처 검색에 사용할 검증된 상품명 또는 시리즈가 없습니다",
-    "사용자가 지원 판매처를 모두 제외하여 검색할 판매처가 없습니다",
-    "검증 가능한 판매 상품을 찾지 못했습니다",
-    "판매처 검색 중 지원 판매처의 외부 검색을 모두 사용할 수 없었습니다",
-)
-
-
-def is_no_seller_result_answer(text: str) -> bool:
-    """명시적인 판매처 0건/오류 응답을 카드 추출 입력과 구분한다."""
-    return any(phrase in str(text or "") for phrase in _NO_SELLER_RESULT_PHRASES)
 
 
 def _parse_seller_legacy_table(text: str) -> list[dict]:
