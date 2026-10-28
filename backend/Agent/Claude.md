@@ -10,10 +10,10 @@ product_search/seller_search/product_analysis를 순서 제약 없이 호출 →
 - `orchestration/` → Supervisor + 3개 워커 노드 (아래 "Orchestration 모듈" 참조)
 - `product_search_agent.py`, `seller_search_agent.py`, `product_analysis_agent.py` → 3개 sub-agent
 
-## 구버전 (수정 X)
-- `LangGraph_buyeragent(with_personalization).py` (진짜 LangMem 기반이었던 원본)
-- `orchestrator_agent.py`, `orchestrator_agent_0310.py`, `LangGraph_orchestrator_agent.py`
-- `sub_agent.py`, `sub_agent_0310.py`
+## 삭제된 구버전 (git 기록에만 남음)
+- `LangGraph_buyeragent(with_personalization).py`(LangMem 원본), `orchestrator_agent*.py`,
+  `LangGraph_orchestrator_agent.py`, `sub_agent.py`, `sub_agent_0310.py`(MCP Exa 검색 기반 하위 에이전트)
+- 초기 버전은 하위 에이전트가 MCP(Exa)로 웹 검색했으나, 현재는 캐시 우선 + Tavily 직접 호출 파이프라인으로 대체됨
 
 ## 노드 흐름
 ```
@@ -64,7 +64,6 @@ Supervisor/워커 노드들은 `Command(goto=...)`로 스스로 다음 목적지
   해석한다. `reset`은 리뷰 상태만 지우고 사용자 메시지를 그대로 들고 `supervisor_node`로 복귀시켜,
   "취소" 요청과 "리뷰 도중 완전히 다른 요청"을 같은 경로로 자연스럽게 처리한다. 카드 정규화/직전 카드
   참조("첫 번째 제품") 해석 헬퍼는 옛 `executor.py`에서 그대로 이식됨.
-- `types.py` → `PendingAction`(interrupt() payload이자 `ChatResponse.pending_action` 형태로 재사용).
 
 ### 삭제된 파일 (Agent/orchestration/)
 `planner.py`, `resolver.py`(정규식 우선 게이트 — "사용자가 자유롭게 응답 못하는" 문제의 원인이었음),
