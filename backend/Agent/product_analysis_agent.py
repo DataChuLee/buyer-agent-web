@@ -1,143 +1,386 @@
 """
-product_analysis_agent.py
-==========================
-크롤링(crawl_and_index)과 RAG 검색(rag_search)을 도구로 가진 Product Analysis Agent.
+Product analysis flow.
 
-흐름:
-  User Query
-      ↓
-  ProductAnalysisAgent
-      ├── crawl_and_index : 판매처 크롤링 → vectorstore upsert
-      └── rag_search      : vectorstore 검색 → Markdown 비교표 생성
-      ↓
-  Final Answer
+This module intentionally keeps the required real-time crawl and
+SelfQueryRetriever-backed RAG search, but removes the extra AgentExecutor
+round trips that only decided which two fixed tools to call.
 """
+
+from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
+from dataclasses import dataclass
+from itertools import zip_longest
+from typing import Any
 
 from dotenv import load_dotenv
-from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_core.documents import Document
 
 load_dotenv()
 
-# ── 경로 등록 ───────────────────────────────────────────────
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.abspath(os.path.join(AGENT_DIR, ".."))
 TOOLS_DIR = os.path.join(BACKEND_DIR, "Tools")
 
-# Tools/, backend/ 를 sys.path 에 추가
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.append(BACKEND_DIR)
 
-# ── Tools import ────────────────────────────────────────────
-# vectorstore_singleton 덕분에 import 경로와 무관하게 동일 인스턴스를 공유함.
-# sys.modules alias 해킹 불필요.
-from Tools.rag_search import rag_search
+from langchain_core.messages import HumanMessage
+
+from Agent.product_search_agent import _extract_requested_price_range
 from Tools.crawl_and_index import crawl_and_index
-
-# ── LLM ─────────────────────────────────────────────────────
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-# ── System Prompt ────────────────────────────────────────────
-SYSTEM_PROMPT = """
-당신은 'Product Analysis Agent'입니다.
-사용자가 원하는 축구화를 찾아 비교표 형태로 제공합니다.
-
-🛠️ 사용 가능한 도구:
-1. crawl_and_index
-   - 지정한 판매처에서 실시간으로 축구화를 크롤링하고 인덱싱합니다.
-   - 지원 판매처 (sellers 파라미터): crazy11, soccerboom, redsoccer, cafostore
-    - sellers 파라미터는 리스트 형식으로 전달해야 합니다. -> sellers: list[str] -> ["crazy11", "soccerboom"] 형태로 전달
-   - 사용자가 한국어 판매처명을 말해도 영문으로 변환하세요:
-     크레이지11 → crazy11 / 사커붐 → soccerboom / 레드사커 → redsoccer / 카포스토어 → cafostore
-
-2. rag_search
-   - 인덱싱된 데이터에서 조건에 맞는 제품을 검색하고 Markdown 비교표를 생성합니다.
-   - 사용자 쿼리 원문을 그대로 전달하세요.
-
-💰 가격 범위 해석 규칙 (crawl_and_index의 min_price / max_price):
-- N만원대       → min_price: N*10000,       max_price: (N+1)*10000 - 1
-  예) 10만원대  → min_price: 100000,        max_price: 199999
-  예) 15만원대  → min_price: 150000,        max_price: 159999
-  예) 20만원대  → min_price: 200000,        max_price: 299999
-- N만원 이상    → min_price: N*10000,       max_price: 999999
-- N만원 이하    → min_price: 0,             max_price: N*10000
-- 가격 언급 없음 → min_price: 0,            max_price: 999999
-
-🔁 수행 절차:
-1️⃣ 사용자 쿼리에서 판매처 / 키워드 / 가격 범위 추출
-2️⃣ crawl_and_index 호출
-3️⃣ rag_search 호출 (사용자 쿼리 원문 그대로 전달)
-4️⃣ 비교표 반환
-
-⚠️ 반드시 crawl_and_index → rag_search 순서로 호출하세요.
-
-🚫 rag_search 쿼리 금지 사항:
-- 사용자가 명시하지 않은 조건(FG, AG, TF, 축구화, 풋살화 등)을 임의로 추가하지 마세요.
-- 사용자 원문에 없는 조건을 추가하면 검색 결과가 의도치 않게 필터링됩니다.
-- 예) 사용자가 "머큐리얼 베이퍼 10만원대"라고 했으면 → "머큐리얼 베이퍼 10만원대"만 전달.
-"""
-
-# ── Agent 구성 ───────────────────────────────────────────────
-analysis_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", SYSTEM_PROMPT),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ]
+from Tools.rag_search import (
+    _generate_answer,
+    format_docs,
+    grade_answer_groundedness,
+    grade_docs_relevance,
+    RagRetrievalError,
+    retrieve_analysis_documents_filtered,
+    rewrite_analysis_query,
+)
+from Tools.seller_normalization import (
+    find_seller_displays_in_query,
+    normalize_seller_crawler,
+    normalize_seller_display,
 )
 
-analysis_tools = [crawl_and_index, rag_search]
-analysis_agent = create_tool_calling_agent(llm, analysis_tools, analysis_prompt)
-analysis_agent_executor = AgentExecutor(
-    agent=analysis_agent,
-    tools=analysis_tools,
-    verbose=True,
-)
+SUPPORTED_CRAWLER_SELLERS = ["crazy11", "soccerboom", "redsoccer", "cafostore"]
+DEFAULT_PRICE_RANGE = (0, 999999)
 
 
-# ── 프로필 컨텍스트 헬퍼 ─────────────────────────────────────
-def _build_profile_context(user_profile: dict | None) -> str:
-    if not user_profile:
-        return ""
-    lines = []
-    labels = {
-        "brand": "선호 브랜드",
-        "budget": "예산",
-        "surface": "선호 지면",
-        "position": "포지션",
-        "age_group": "연령대",
-    }
-    for key, label in labels.items():
-        if user_profile.get(key):
-            lines.append(f"- {label}: {user_profile[key]}")
-    if user_profile.get("physical_traits"):
-        lines.append(f"- 신체 특성: {', '.join(user_profile['physical_traits'])}")
-    if user_profile.get("play_style"):
-        lines.append(f"- 플레이 스타일: {', '.join(user_profile['play_style'])}")
-    return "\n".join(lines)
+@dataclass
+class ProductAnalysisResult:
+    answer: str
+    docs: list[Document]
 
 
-# ── 실행 함수 ────────────────────────────────────────────────
-async def product_analysis_agent(query: str, user_profile: dict = None) -> str:
-    profile_context = _build_profile_context(user_profile)
-    full_input = (
-        f"{query}\n\n[유저 프로필 참고 — 비교표 설명에 개인화 반영]\n{profile_context}"
-        if profile_context
-        else query
+def _extract_price_range(text: str) -> tuple[int, int]:
+    # product_search_agent의 파서를 재사용 — 두 파서가 따로 있으면 "10만원 이상" 같은 같은
+    # 문구가 product_search/product_analysis에서 서로 다른 상한(999,999 vs 9,999,999)으로
+    # 해석되어, 같은 요청인데 한쪽만 결과가 필터링되는 불일치가 생긴다.
+    return _extract_requested_price_range(text) or DEFAULT_PRICE_RANGE
+
+
+def _extract_sellers(query: str, conditions: dict[str, Any] | None = None) -> list[str]:
+    sellers: list[str] = []
+
+    def add_seller(value: Any) -> None:
+        crawler = normalize_seller_crawler(str(value or ""))
+        if crawler in SUPPORTED_CRAWLER_SELLERS and crawler not in sellers:
+            sellers.append(crawler)
+
+    conditions = conditions or {}
+    # seller 조건이 "크레이지11, 사커붐"처럼 여러 곳일 수 있으므로 구분자로 분리해 각각 추가
+    for token in re.split(
+        r"[,/]|과|와|랑|이랑|하고|그리고", str(conditions.get("seller") or "")
+    ):
+        add_seller(token)
+
+    for display in find_seller_displays_in_query(query):
+        add_seller(display)
+
+    return sellers or list(SUPPORTED_CRAWLER_SELLERS)
+
+
+def _extract_product_keyword(
+    query: str, conditions: dict[str, Any] | None = None
+) -> str:
+    conditions = conditions or {}
+    for key in ("product_name", "brand"):
+        value = str(conditions.get(key) or "").strip()
+        if value:
+            return value
+
+    cleaned = str(query or "")
+    # 영문/한글 셀러명 제거
+    cleaned = re.sub(
+        r"\b(crazy11|soccerboom|redsoccer|cafostore)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
     )
-    response = await analysis_agent_executor.ainvoke({"input": full_input})
-    return response["output"]
+    cleaned = re.sub(r"(크레이지11|사커붐|레드사커|카포스토어)", " ", cleaned)
+    cleaned = re.sub(r"\d+\s*만원\s*(?:대|이상|이하)?", " ", cleaned)
+    # 2글자 이상 조사/동사만 안전하게 제거 — "이/가/은/는" 같은 1글자는 단어 내부와 충돌(예: "나이키" → "나 키")
+    cleaned = re.sub(
+        r"(에서|비교|분석|추천|해줘|해주세요|축구화|풋살화|이랑|하고|또는|그리고)",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or "축구화"
 
 
-# ── 테스트 ────────────────────────────────────────────────────
+_GROUND_TYPES = ["TF", "FG", "AG", "HG", "IC", "MG", "SG"]
+
+
+def _extract_ground_type(
+    text: str, conditions: dict[str, Any] | None = None
+) -> str | None:
+    """질의/조건에서 지면 종류(TF/FG/AG/HG/IC/MG/SG)를 추출. 없으면 None."""
+    haystack = " ".join(
+        [str(text or ""), *(str(v) for v in (conditions or {}).values())]
+    ).upper()
+    for ground in _GROUND_TYPES:
+        if re.search(rf"\b{ground}\b", haystack):
+            return ground
+    return None
+
+
+def _extract_size(text: str, conditions: dict[str, Any] | None = None) -> str | None:
+    """질의/조건에서 신발 사이즈(3자리 숫자)를 추출. 없으면 None."""
+    size_condition = str((conditions or {}).get("size") or "").strip()
+    if size_condition.isdigit():
+        return size_condition
+    if match := re.search(r"사이즈\s*(?:가|는|이)?\s*(\d{3})|(\d{3})\s*사이즈", str(text or "")):
+        return match.group(1) or match.group(2)
+    return None
+
+
+def _format_price_range(min_price: int, max_price: int) -> str:
+    if (min_price, max_price) == DEFAULT_PRICE_RANGE:
+        return "가격 제한 없음"
+    if min_price <= 0:
+        return f"{max_price:,}원 이하"
+    if max_price >= DEFAULT_PRICE_RANGE[1]:
+        return f"{min_price:,}원 이상"
+    return f"{min_price:,}~{max_price:,}원"
+
+
+def _format_seller_names(sellers: list[str]) -> str:
+    return ", ".join(normalize_seller_display(seller) for seller in sellers)
+
+
+def _build_no_result_answer(
+    product_keyword: str,
+    sellers: list[str],
+    min_price: int,
+    max_price: int,
+    ground_type: str | None,
+    size: str | None = None,
+    conditions: dict[str, Any] | None = None,
+) -> str:
+    conditions = conditions or {}
+    filters = [
+        f"상품 키워드: {product_keyword}",
+        f"판매처: {_format_seller_names(sellers)}",
+        f"판매가 범위: {_format_price_range(min_price, max_price)}",
+    ]
+    if ground_type:
+        filters.append(f"지면: {ground_type}")
+    if size:
+        filters.append(f"사이즈: {size}")
+    if conditions.get("age_group"):
+        filters.append(f"연령대: {conditions['age_group']}")
+
+    return (
+        "요청하신 조건에 부합하는 축구화 정보를 찾을 수 없습니다.\n\n"
+        f"확인한 조건은 {' / '.join(filters)}입니다. "
+        "크롤링 캐시와 RAG 검색 결과에서 이 조건을 동시에 만족하는 상품 문서가 없었습니다. "
+        "판매처를 넓히거나, 가격대를 완화하거나, 지면 조건을 빼고 다시 요청해 주세요."
+    )
+
+
+def _build_retrieval_unavailable_answer() -> str:
+    """Keep a retrieval outage distinct from a valid no-product result."""
+    return (
+        "현재 상품 검색을 완료하지 못했습니다. 조건에 맞는 상품이 없다는 뜻은 아니며, "
+        "잠시 후 다시 요청해 주세요."
+    )
+
+
+async def _crawl_and_search_seller(
+    seller: str,
+    product_keyword: str,
+    min_price: int,
+    max_price: int,
+    base_query: str,
+    ground_type: str | None = None,
+    size: str | None = None,
+    exclude_keys: set[str] | None = None,
+) -> list[Document]:
+    """단일 판매처: 크롤 완료 후 RAG 검색. 타 판매처와는 asyncio.gather로 병렬 실행.
+
+    검색은 판매처/가격대/지면/사이즈 메타데이터를 명시적으로 필터링하고 상품명에 모델 키워드가
+    실제 포함된 문서만 남긴다(엉뚱한 판매처/가격대/모델/사이즈 노출 차단)."""
+    await crawl_and_index.ainvoke(
+        {
+            "sellers": [seller],
+            "product_keyword": product_keyword,
+            "min_price": min_price,
+            "max_price": max_price,
+        }
+    )
+    seller_display = normalize_seller_display(seller)
+    return retrieve_analysis_documents_filtered(
+        seller_display=seller_display,
+        product_keyword=product_keyword,
+        min_price=min_price,
+        max_price=max_price,
+        limit=3,
+        ground_type=ground_type,
+        size=size,
+        exclude_keys=exclude_keys,
+    )
+
+
+def _merge_docs_round_robin(docs_per_seller: list[list[Document]]) -> list[Document]:
+    """판매처별 결과를 라운드로빈으로 섞어 병합 + (seller, product_name) 기준 중복 제거."""
+    seen: set[tuple[str, str] | str] = set()
+    merged: list[Document] = []
+    for round_docs in zip_longest(*docs_per_seller):
+        for doc in round_docs:
+            if doc is None:
+                continue
+            meta = doc.metadata or {}
+            seller = str(meta.get("seller") or "").strip()
+            name = str(meta.get("product_name") or "").strip()
+            key: tuple[str, str] | str = (seller, name) if seller and name else (
+                meta.get("product_url") or doc.page_content
+            )
+            if key not in seen:
+                seen.add(key)
+                merged.append(doc)
+    return merged
+
+
+async def product_analysis_agent(
+    query: str,
+    user_profile: dict | None = None,
+    conditions: dict[str, Any] | None = None,
+    return_result: bool = False,
+    original_query: str | None = None,
+    exclude_keys: set[str] | None = None,
+) -> str | ProductAnalysisResult:
+    del user_profile  # Profile use is handled by the outer graph state.
+
+    search_query = original_query or query
+    crawl_query_text = " ".join(
+        str(value)
+        for value in [search_query, *((conditions or {}).values())]
+        if value is not None
+    )
+    min_price, max_price = _extract_price_range(crawl_query_text)
+    sellers = _extract_sellers(search_query, conditions)
+    product_keyword = _extract_product_keyword(search_query, conditions)
+    ground_type = _extract_ground_type(search_query, conditions)
+    size = _extract_size(search_query, conditions)
+
+    # 후속 질문("다른 건 없어?")처럼 원문이 빈약해도 가격대/상품명이 RAG 검색에 실리도록
+    # 조건을 병합한 검색용 base 쿼리를 구성. (search_query 는 답변 생성 컨텍스트용으로만 유지)
+    condition_terms = " ".join(
+        str((conditions or {}).get(key))
+        for key in ("product_name", "brand", "budget", "age_group", "surface")
+        if (conditions or {}).get(key)
+    )
+    retrieval_base = f"{product_keyword} {condition_terms}".strip() or search_query
+
+    # 판매처별 [크롤 → RAG 검색] 파이프라인을 병렬 실행
+    try:
+        docs_per_seller: list[list[Document]] = await asyncio.gather(
+            *[
+                _crawl_and_search_seller(
+                    seller,
+                    product_keyword,
+                    min_price,
+                    max_price,
+                    retrieval_base,
+                    ground_type,
+                    size=size,
+                    exclude_keys=exclude_keys,
+                )
+                for seller in sellers
+            ]
+        )
+    except RagRetrievalError:
+        unavailable = ProductAnalysisResult(answer=_build_retrieval_unavailable_answer(), docs=[])
+        return unavailable if return_result else unavailable.answer
+
+    # 결과 병합 + 중복 제거. 판매처 순서대로 이어붙이면 한 판매처가 limit을 다 채워 나머지
+    # 판매처가 카드에 등장하지 못하므로, 라운드로빈으로 섞어 하위 limit 절단이 공평하게 적용되게 한다.
+    all_docs = _merge_docs_round_robin(docs_per_seller)
+
+    # 제외(exclude_keys) 때문에 후보가 0건이면 = 이미 보여준 것 외엔 없음.
+    # 불필요한 LLM 호출을 건너뛰고 빈 결과를 반환한다("더 이상 없음" 문구는 호출 노드에서 처리).
+    if not all_docs and exclude_keys:
+        empty = ProductAnalysisResult(answer="", docs=[])
+        return empty if return_result else empty.answer
+
+    def no_result() -> ProductAnalysisResult:
+        return ProductAnalysisResult(
+            answer=_build_no_result_answer(
+                product_keyword=product_keyword,
+                sellers=sellers,
+                min_price=min_price,
+                max_price=max_price,
+                ground_type=ground_type,
+                size=size,
+                conditions=conditions,
+            ),
+            docs=[],
+        )
+
+    if not all_docs:
+        result = no_result()
+        return result if return_result else result.answer
+
+    # CRAG: 생성 전에 검색된 문서가 실제로 질문과 관련 있는지 채점. 전부 무관하면 질문을
+    # 넓혀 재작성해 1회만 재크롤링/재검색한다(무한 루프 방지 — product_search_agent의
+    # _run_surface_expanded_search와 동일한 "한 번만 재시도" 철학).
+    graded_docs = await grade_docs_relevance(search_query, all_docs)
+    if not graded_docs:
+        rewritten_query = await rewrite_analysis_query(search_query, conditions)
+        try:
+            docs_per_seller_retry = await asyncio.gather(
+                *[
+                    _crawl_and_search_seller(
+                        seller,
+                        product_keyword,
+                        min_price,
+                        max_price,
+                        rewritten_query,
+                        ground_type,
+                        size=size,
+                        exclude_keys=exclude_keys,
+                    )
+                    for seller in sellers
+                ]
+            )
+        except RagRetrievalError:
+            unavailable = ProductAnalysisResult(answer=_build_retrieval_unavailable_answer(), docs=[])
+            return unavailable if return_result else unavailable.answer
+        retry_docs = _merge_docs_round_robin(docs_per_seller_retry)
+        graded_docs = await grade_docs_relevance(search_query, retry_docs) if retry_docs else []
+        if not graded_docs:
+            result = no_result()
+            return result if return_result else result.answer
+
+    all_docs = graded_docs
+    context = format_docs(all_docs)
+    answer = await _generate_answer(context, [HumanMessage(content=search_query)])
+
+    # Self-RAG: 생성된 답변이 실제로 문서에 근거하는지(가격/스펙 hallucination) 검증.
+    # 근거 없으면 "문서에 없는 내용은 말하지 말라"는 강화된 지시로 1회만 재생성한다.
+    if not await grade_answer_groundedness(answer, all_docs):
+        answer = await _generate_answer(
+            context,
+            [
+                HumanMessage(
+                    content=f"{search_query}\n\n"
+                    "(주의: Context에 없는 가격/스펙/기능은 절대 언급하지 마세요.)"
+                )
+            ],
+        )
+
+    result = ProductAnalysisResult(answer=answer, docs=all_docs)
+    return result if return_result else result.answer
+
+
 if __name__ == "__main__":
 
     async def test():
