@@ -31,3 +31,7 @@
 - [x] `Product_Search.ipynb` Agent 모듈 테스트 셀에 `importlib.reload()`를 추가해 Jupyter 커널의 오래된 `Agent.product_search_agent` 캐시로 `rejection_summary` 키가 누락되는 문제 방지
 - [ ] 오프라인 환경에서 `draw_mermaid_png()`가 실패하면 로컬 Mermaid 렌더러 설정 검토
 - [ ] 레드사커 `머큐리얼 베이퍼 15 TF` exact raw item을 캐시에 포함하려면 크롤러/웜업 데이터 갱신 필요
+- [x] 서비스(`FastAPI/main.py`, `AutomationWorker/main.py`)·테스트·벤치마크 어디서도 import되지 않는 구버전 코드 제거(2026-10-28):
+  구버전 에이전트 6개(`orchestrator_agent*.py`, `LangGraph_orchestrator_agent.py`, `sub_agent*.py`, LangMem 원본 그래프),
+  `MCP/`·`Chain/`·`Userprofile/` 폴더, `Tools/tool.py`, `State/AgentState.py`, 레거시 `main.py`, `Crawling/crawling.py`,
+  미사용 `Agent/orchestration/types.py`, 실험용 노트북 6개. 테스트 169개 통과. 내용은 git 기록에서 복구 가능.
