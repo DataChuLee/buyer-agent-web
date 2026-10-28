@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { CheckCircle2, Circle, CircleDotDashed } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
