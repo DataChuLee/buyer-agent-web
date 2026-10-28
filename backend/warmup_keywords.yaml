@@ -1,0 +1,28 @@
+# 사전 크롤 워밍업 키워드 정의
+# 서버 부팅 시 (FastAPI lifespan) 백그라운드로 crawl_and_index 가 실행되어
+# 인기 (keyword × seller × price_band) 조합을 미리 ChromaDB 에 인덱싱한다.
+#
+# - 이미 영속 레지스트리 TTL(24h) 안에 있는 조합은 자동 스킵.
+# - keyword 추가/변경 후 서버 재시작만 하면 다음 워밍업부터 반영.
+# - 판매처별 상품명 표기 차이를 고려해 시리즈명만 사용 (브랜드명 제외).
+
+keywords:
+  - 머큐리얼
+  - 프레데터
+  - 퓨처
+  - 모렐리아
+  - 코파
+  - 팬텀
+
+sellers:
+  - crazy11
+  - soccerboom
+  - redsoccer
+  - cafostore
+
+# [min_price, max_price] 단위: 원
+# 경계값 중복 방지: 각 구간의 끝값과 다음 구간의 시작값이 겹치지 않도록 설정
+price_bands:
+  - [0, 99999]
+  - [100000, 199999]
+  - [200000, 500000]
