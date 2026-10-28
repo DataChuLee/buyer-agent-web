@@ -361,6 +361,55 @@ def item_to_document(item: dict[str, Any]) -> Document:
     return Document(page_content=page_content, metadata=metadata)
 
 
+def _document_id(document: Document) -> str:
+    seller = document.metadata.get("seller", "")
+    product_name = document.metadata.get("product_name", "").lower().strip()
+    key = f"{seller}|{product_name}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def _existing_vectorstore_ids(ids: list[str], store: Any) -> set[str]:
+    collection = getattr(store, "_collection", None)
+    if collection is None or not ids:
+        return set()
+
+    try:
+        existing = collection.get(ids=ids) or {}
+    except Exception:
+        return set()
+
+    return set(existing.get("ids") or [])
+
+
+def _add_new_documents(docs: list[Document], store: Any = None) -> int:
+    if store is None:
+        store = _get_vectorstore()
+    seen_ids: set[str] = set()
+    unique_docs: list[Document] = []
+    unique_ids: list[str] = []
+
+    for document in docs:
+        document_id = _document_id(document)
+        if document_id in seen_ids:
+            continue
+        seen_ids.add(document_id)
+        unique_docs.append(document)
+        unique_ids.append(document_id)
+
+    if not unique_docs:
+        return 0
+
+    # 기존 문서 삭제 후 재삽입 — 가격·재고 변경 반영 (Option A upsert)
+    existing_ids = _existing_vectorstore_ids(unique_ids, store)
+    if existing_ids:
+        collection = getattr(store, "_collection", None)
+        if collection is not None:
+            collection.delete(ids=list(existing_ids))
+
+    store.add_documents(unique_docs, ids=unique_ids)
+    return len(unique_docs)
+
+
 @tool
 async def crawl_and_index(
     sellers: list[str], product_keyword: str, min_price: int, max_price: int
@@ -397,15 +446,13 @@ async def crawl_and_index(
         return f"크롤링 결과 없음. 오류: {errors}"
 
     docs = [item_to_document(item) for item in items]
-    ids = [
-        hashlib.sha1(document.metadata["product_url"].encode("utf-8")).hexdigest()
-        for document in docs
-    ]
-    _get_vectorstore().add_documents(docs, ids=ids)
+    added = _add_new_documents(docs)
 
+    # 성공 시 영속 레지스트리에 등록 (TTL 24h) — 동기 파일 쓰기이므로 to_thread로 오프로드.
     await asyncio.to_thread(
-        register_crawl, sellers, product_keyword, min_price, max_price, len(docs)
+        register_crawl, sellers, product_keyword, min_price, max_price, added
     )
+
     # Seller Search 재사용을 위해 raw items도 캐시에 저장
     _store_raw_items(sellers, product_keyword, min_price, max_price, items)
 
