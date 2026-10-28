@@ -184,10 +184,6 @@ def _excerpt(value: Any, limit: int = 180) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
-def _escape_markdown_cell(value: Any) -> str:
-    return str(value or "").replace("|", " ").strip()
-
-
 def _result_text(result: dict[str, Any]) -> str:
     return "\n".join(
         str(result.get(key) or "")
@@ -213,11 +209,6 @@ def _seller_domain(url: str) -> str | None:
         if host == domain or host.endswith(f".{domain}"):
             return domain
     return None
-
-
-def _seller_label(url: str) -> str:
-    domain = _seller_domain(url)
-    return PRODUCT_SEARCH_DOMAIN_LABELS.get(domain or "", "지원 판매처")
 
 
 def _result_domain_ok(url: str, domain: str) -> bool:
@@ -366,15 +357,6 @@ def _matches_requested_series(series_name: str | None, raw_name: str, query: str
     return candidate.startswith(requested)
 
 
-def _matches_requested_price(sale_price: int | None, query: str) -> bool:
-    price_range = _extract_requested_price_range(query)
-    if not price_range:
-        return True
-    if sale_price is None:
-        return False
-    return price_range[0] <= sale_price <= price_range[1]
-
-
 def _price_match_for_item(item: dict[str, Any], query: str) -> tuple[bool, str | None, int | None]:
     price_range = _extract_requested_price_range(query)
     sale_price = _coerce_verified_price(item.get("sale_price"))
@@ -388,26 +370,6 @@ def _price_match_for_item(item: dict[str, Any], query: str) -> tuple[bool, str |
         return matches, "consumer_price", consumer_price
 
     return False, None, None
-
-
-def build_product_search_query(
-    conditions: dict[str, Any] | str | None,
-    rejected_series: list[str] | None = None,
-) -> str:
-    if isinstance(conditions, str):
-        base = conditions
-    else:
-        values = conditions or {}
-        parts = [
-            str(values[key])
-            for key in ["brand", "budget", "surface", "position", "age_group", "product_name"]
-            if values.get(key)
-        ]
-        base = " ".join(parts)
-    base = _compact_spaces(base) or "축구화"
-    rejected = [item for item in (rejected_series or []) if item]
-    exclusion = f" {' '.join(rejected)} 제외" if rejected else ""
-    return _compact_spaces(f"{base} 축구화 풋살화 시리즈 추천{exclusion}")
 
 
 def build_tavily_product_search_query(query: str) -> str:
@@ -995,143 +957,6 @@ def parse_product_markdown_table(text: str) -> list[dict[str, Any]]:
     return parsed
 
 
-def _flat_results_from_parallel(parallel_result: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for seller_result in (parallel_result or {}).values():
-        if not isinstance(seller_result, dict):
-            continue
-        rows.extend([item for item in seller_result.get("results") or [] if isinstance(item, dict)])
-    return rows
-
-
-def format_unfiltered_tavily_results(results: list[dict[str, Any]], limit: int = 10) -> str:
-    rows = [
-        "가격 필터를 적용하지 않은 Tavily 원본 결과입니다.",
-        "",
-        "| 순위 | 제목 | URL | 요약 | 추출 가격 후보 |",
-        "|---|---|---|---|---|",
-    ]
-    for idx, result in enumerate((results or [])[:limit], start=1):
-        if not isinstance(result, dict):
-            continue
-        text = _result_text(result)
-        prices = _extract_price_values(text)
-        price_text = ", ".join(f"{price:,}원" for price in prices[:5]) if prices else "없음"
-        rows.append(
-            "| {idx} | {title} | {url} | {summary} | {prices} |".format(
-                idx=idx,
-                title=_escape_markdown_cell(result.get("title") or "제목 없음"),
-                url=_escape_markdown_cell(result.get("url") or ""),
-                summary=_escape_markdown_cell(_excerpt(text)),
-                prices=_escape_markdown_cell(price_text),
-            )
-        )
-    if len(rows) == 4:
-        rows.append("| - | 결과 없음 |  |  |  |")
-    return "\n".join(rows)
-
-
-def _format_diagnostic_rows(
-    results: list[dict[str, Any]],
-    *,
-    include_prices_only: bool = False,
-    price_range: tuple[int, int] | None = None,
-    limit: int = 10,
-) -> list[str]:
-    rows = ["| 순위 | 제목 | URL | 추출 가격 후보 | 요약 |", "|---|---|---|---|---|"]
-    for result in (results or [])[:limit]:
-        if not isinstance(result, dict):
-            continue
-        text = _result_text(result)
-        prices = _extract_price_values(text)
-        if include_prices_only and not prices:
-            continue
-        if price_range and not any(price_range[0] <= price <= price_range[1] for price in prices):
-            continue
-
-        price_text = ", ".join(f"{price:,}원" for price in prices[:5]) if prices else "없음"
-        rows.append(
-            "| {idx} | {title} | {url} | {prices} | {summary} |".format(
-                idx=len(rows) - 1,
-                title=_escape_markdown_cell(result.get("title") or "제목 없음"),
-                url=_escape_markdown_cell(result.get("url") or ""),
-                prices=_escape_markdown_cell(price_text),
-                summary=_escape_markdown_cell(_excerpt(text)),
-            )
-        )
-    if len(rows) == 2:
-        rows.append("| - | 결과 없음 |  |  |  |")
-    return rows
-
-
-def format_tavily_price_diagnostics(
-    query: str,
-    results: list[dict[str, Any]],
-    limit: int = 10,
-) -> str:
-    price_range = _extract_requested_price_range(query)
-    sections = [
-        "RAW: 아무 필터도 적용하지 않은 Tavily 원본",
-        *_format_diagnostic_rows(results, limit=limit),
-        "",
-        "PRICE_DETECTED: 가격 후보가 추출된 결과",
-        *_format_diagnostic_rows(results, include_prices_only=True, limit=limit),
-        "",
-        "PRICE_FILTERED: 요청 가격대 통과 결과" if price_range else "PRICE_FILTERED: 가격 조건 없음 - 필터 미적용",
-    ]
-    sections.extend(_format_diagnostic_rows(results, price_range=price_range, limit=limit))
-    return "\n".join(sections)
-
-
-def filter_tavily_product_results(
-    query: str,
-    results: list[dict[str, Any]],
-    limit: int = 5,
-) -> list[dict[str, str]]:
-    parallel_result = {
-        "legacy": {
-            "seller": "지원 판매처",
-            "domain": "",
-            "ok": True,
-            "results": [
-                dict(result, domain_ok=bool(_seller_domain(result.get("url", ""))))
-                for result in (results or [])
-                if isinstance(result, dict)
-            ],
-        }
-    }
-    pipeline = build_product_search_pipeline_result(query, parallel_result)
-    cards: list[dict[str, str]] = []
-    for row in pipeline["deduped_series"][:limit]:
-        price = row.get("sale_price")
-        cards.append(
-            {
-                "name": row.get("series_name") or row.get("raw_name") or "",
-                "features": row.get("surface") or "",
-                "recommendation": build_recommendation_reason(row, query),
-                "price": f"{price:,}원" if price is not None else "",
-                "url": row.get("product_url") or row.get("source_url") or "",
-            }
-        )
-    return cards
-
-
-def build_strict_product_search_answer(query: str, results: list[dict[str, Any]]) -> str:
-    parallel_result = {
-        "legacy": {
-            "seller": "지원 판매처",
-            "domain": "",
-            "ok": True,
-            "results": [
-                dict(result, domain_ok=bool(_seller_domain(result.get("url", ""))))
-                for result in (results or [])
-                if isinstance(result, dict)
-            ],
-        }
-    }
-    return build_product_search_pipeline_result(query, parallel_result)["answer"]
-
-
 def _build_profile_context(user_profile: dict[str, Any] | None) -> str:
     profile = user_profile or {}
     fields: list[str] = []
@@ -1356,16 +1181,6 @@ async def run_product_search_pipeline(query: str) -> dict[str, Any]:
         ),
         failed_sellers=failed_sellers,
     )
-
-
-async def run_unfiltered_tavily_product_search(query: str) -> str:
-    parallel_result = await run_parallel_tavily_product_search(query)
-    return format_unfiltered_tavily_results(_flat_results_from_parallel(parallel_result))
-
-
-async def run_tavily_price_diagnostics(query: str) -> str:
-    parallel_result = await run_parallel_tavily_product_search(query)
-    return format_tavily_price_diagnostics(query, _flat_results_from_parallel(parallel_result))
 
 
 async def run_product_search(query: str) -> str:
