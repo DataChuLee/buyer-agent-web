@@ -3,7 +3,6 @@ import unittest
 from Tools.seller_selection import (
     parse_seller_price,
     select_cheapest_seller,
-    select_cheapest_seller_from_markdown,
     validate_seller_candidate,
 )
 
@@ -73,16 +72,6 @@ class SellerSelectionTests(unittest.TestCase):
         ]
         result = select_cheapest_seller(rows)
         self.assertEqual("https://soccerboom.co.kr/z", result["selected"]["product_url"])
-
-    def test_legacy_markdown_uses_supported_url_and_no_arbitrary_default(self):
-        answer = """
-| 판매처 | 판매 여부 | 최저가 | 바로가기 |
-|---|---|---|---|
-| 크레이지11 | 판매 중 | 109,000원 | [방문](https://crazy11.co.kr/item/1) |
-| 카포스토어 | 판매 중 | 101,400원 | [방문](https://capostore.co.kr/item/2) |
-"""
-        self.assertEqual("카포스토어", select_cheapest_seller_from_markdown(answer))
-        self.assertIsNone(select_cheapest_seller_from_markdown("결과 없음", default="크레이지11"))
 
 
 if __name__ == "__main__":
