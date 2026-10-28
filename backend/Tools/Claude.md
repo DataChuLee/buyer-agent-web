@@ -4,7 +4,6 @@
 에이전트가 호출하는 도구 함수 모음. LangGraph 노드에서 직접 import해서 사용.
 
 ## 주요 파일
-- `tool.py` → 메인 도구 모듈 (22KB, 가장 큰 파일). 에이전트 tool 함수들 정의
 - `rag_search.py` → ChromaDB 기반 RAG 검색. `Agent/product_analysis_agent.py`용 CRAG/Self-RAG 채점 함수도
   포함: `grade_docs_relevance`(생성 전 검색 문서가 질문과 실제로 관련 있는지 채점), `rewrite_analysis_query`
   (관련 문서가 없을 때 재검색용 질의 재작성), `grade_answer_groundedness`(생성 후 답변의 가격/스펙 주장이
@@ -18,5 +17,4 @@
 
 ## 의존성
 - ChromaDB: 벡터 DB (RAG)
-- `Crawling/crawling.py`: 크롤링 실행
-- `Userprofile/userprofile.py`: 유저 프로필 조회
+- `Crawling/seller_total_test.py`: 판매처별 크롤러 통합 실행(`crawl_multiple_sellers`)
