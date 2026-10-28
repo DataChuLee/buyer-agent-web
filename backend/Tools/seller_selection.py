@@ -4,8 +4,6 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from Tools.seller_normalization import normalize_seller_display
-
 
 DOMAIN_TO_SELLER = {
     "crazy11.co.kr": "크레이지11",
@@ -14,9 +12,6 @@ DOMAIN_TO_SELLER = {
     "capostore.co.kr": "카포스토어",
 }
 SELLER_ORDER = ["크레이지11", "사커붐", "레드사커", "카포스토어"]
-SELLER_URL = {
-    seller: f"https://{domain}" for domain, seller in DOMAIN_TO_SELLER.items()
-}
 MIN_VALID_SELLER_PRICE = 20_000
 MAX_VALID_SELLER_PRICE = 9_999_999
 
@@ -159,41 +154,3 @@ def select_cheapest_seller(
     }
 
 
-def _markdown_candidates(answer: str) -> list[dict[str, Any]]:
-    rows = []
-    for line in str(answer or "").splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|") or "---" in stripped:
-            continue
-        columns = [column.strip() for column in stripped.strip("|").split("|")]
-        if not columns or columns[0] in {"판매처", "판매처명"}:
-            continue
-        if len(columns) < 4:
-            continue
-        url_match = re.search(r"\[[^\]]+\]\(([^)]+)\)", columns[-1])
-        url = url_match.group(1).strip() if url_match else columns[-1]
-        rows.append(
-            {
-                "seller": normalize_seller_display(columns[0]),
-                "availability": columns[1],
-                "sale_price": columns[2],
-                "product_url": url,
-                "product_match": True,
-                "source": "markdown",
-            }
-        )
-    return rows
-
-
-def select_cheapest_seller_from_markdown(
-    answer: str,
-    default: str | None = None,
-) -> str | None:
-    """Legacy Markdown 입력에서 검증 가능한 최저가 판매처를 고른다.
-
-    `default`는 호출 호환성을 위해 남겨두지만 안전상 임의 fallback으로 사용하지 않는다.
-    """
-    del default
-    result = select_cheapest_seller(_markdown_candidates(answer))
-    selected = result["selected"]
-    return selected["seller"] if selected else None
