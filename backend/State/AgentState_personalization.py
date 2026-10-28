@@ -11,6 +11,7 @@ IntentType = Literal[
     "product_search",
     "seller_search",
     "product_analysis",
+    "product_guide",
     "purchase_prepare",
     "chitchat",
 ]
@@ -50,6 +51,7 @@ class UserProfile(BaseModel):
 class BuyerAgentStateV2(TypedDict):
     session_id: str
     user_id: str
+    request_id: str | None
     messages: Annotated[list, add_messages]
 
     intent: IntentType
@@ -73,8 +75,28 @@ class BuyerAgentStateV2(TypedDict):
     analysis: list[dict] | None
     crawled_context: dict | None
 
+    # 최신 응답에는 노출하지 않지만, "첫 번째 제품", "저 제품" 같은 후속 참조를
+    # 실제 카드명으로 해석하기 위해 체크포인트에 보관한다.
+    last_products: list[dict] | None
+    last_sellers: list[dict] | None
+    last_analysis: list[dict] | None
+
+    # 분석 후속 질문("다른 건 없어?") 시 이미 보여준 제품을 제외하기 위한 누적 키("seller|name").
+    # 체크포인트 state 에만 보관되는 내부 필드(응답 스키마 비노출).
+    shown_product_keys: list[str]
+
     selected_product: dict | None
     purchase_status: str | None
     purchase_missing_fields: list[str]
     shipping_info: dict | None
     checkout_session: dict | None
+
+    requested_capabilities: list[str]
+    past_steps: list[str]
+    selected_series: str | None
+    selected_series_card: dict | None
+    selected_seller: dict | None
+    rejected_series: list[str]
+    rejected_sellers: list[str]
+    rejected_product_keys: list[str]
+    orchestration_retry_count: int
