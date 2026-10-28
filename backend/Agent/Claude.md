@@ -45,8 +45,7 @@ Supervisor/워커 노드들은 `Command(goto=...)`로 스스로 다음 목적지
   `create_react_agent`로 호출(외부 문자열 시그니처 유지). 내부 `run_seller_search_pipeline()`은 검증된
   시리즈만 입력으로 받고 지원 도메인·상품 일치·판매 상태·상세 URL·검증 가격을 통과한 후보만 남긴다.
   상태는 `ok`/`no_results`/`error`/`partial_failure`, 진단은 `source`/`failed_sellers`/
-  `rejection_summary`로 표현한다. 부분 실패에서는 성공 후보를 버리지 않는다. 명시적인 0건/오류 문자열은
-  `is_no_seller_result_answer()`로 판별해 LLM 카드 추출 전에 차단할 수 있다.
+  `rejection_summary`로 표현한다. 부분 실패에서는 성공 후보를 버리지 않는다.
 - `product_analysis_agent.py` → 크롤링 + RAG 분석 파이프라인. `create_react_agent`로 감싸지 않고
   결정적 함수로 유지(카드 생성이 RAG `docs` 메타데이터에 의존하고, 과거 AgentExecutor를 지연시간/
   hallucination 때문에 제거한 이력이 있어 되돌리지 않음). CRAG 스타일 `grade_docs_relevance`(생성 전
