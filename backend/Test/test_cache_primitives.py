@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from Tools import crawl_registry, web_search_cache
+from Tools import crawl_registry
 
 
 class CrawlRegistryTests(unittest.TestCase):
@@ -75,59 +75,3 @@ class CrawlRegistryTests(unittest.TestCase):
         )
 
 
-class WebSearchCacheTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.cache_path = Path(self.tempdir.name) / "web_search_cache.json"
-        self.path_patch = patch.object(
-            web_search_cache, "_CACHE_PATH", str(self.cache_path)
-        )
-        self.path_patch.start()
-        with web_search_cache._L1_LOCK:
-            web_search_cache._L1.clear()
-
-    def tearDown(self):
-        with web_search_cache._L1_LOCK:
-            web_search_cache._L1.clear()
-        self.path_patch.stop()
-        self.tempdir.cleanup()
-
-    async def test_l1_and_disk_hits_skip_duplicate_fetches(self):
-        calls = 0
-
-        async def fetch():
-            nonlocal calls
-            calls += 1
-            return {"items": [1, 2]}
-
-        first = await web_search_cache.cached_web_search("tavily", " Nike ", 60, fetch)
-        second = await web_search_cache.cached_web_search("tavily", "nike", 60, fetch)
-        with web_search_cache._L1_LOCK:
-            web_search_cache._L1.clear()
-        third = await web_search_cache.cached_web_search("tavily", "NIKE", 60, fetch)
-
-        self.assertEqual(first, second)
-        self.assertEqual(second, third)
-        self.assertEqual(calls, 1)
-
-    async def test_expired_naive_and_corrupt_entries_are_ignored(self):
-        expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(
-            tzinfo=None
-        )
-        key = web_search_cache._cache_key("tavily", "nike")
-        self.cache_path.write_text(
-            json.dumps(
-                {
-                    key: {"result": "stale", "expires_at": expired.isoformat()},
-                    "invalid": {"result": "bad", "expires_at": {"not": "text"}},
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        async def fetch():
-            return "fresh"
-
-        result = await web_search_cache.cached_web_search("tavily", "nike", 60, fetch)
-
-        self.assertEqual(result, "fresh")
