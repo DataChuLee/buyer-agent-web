@@ -21,7 +21,3 @@
 - `test.py` → 통합 테스트
 - `test_redsoccer_size_extraction.py` → `Crawling/redsoccer_test.py`의 `_looks_like_size`/`_extract_sizes_from_text_blob`가 무관한 3자리 숫자(상품코드 조각, 리뷰 수 등)를 신발 사이즈로 오인식하지 않는지 검증하는 회귀 테스트
 
-## 노트북 (실험용)
-- `test_mcp.ipynb`, `test_mcp_0223.ipynb` → MCP 연동 실험
-- `crawling_test.ipynb` → 크롤러 실험
-- `test_0312.ipynb`, `test.ipynb` → 전반적 기능 실험
