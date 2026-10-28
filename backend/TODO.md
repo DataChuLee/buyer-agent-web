@@ -35,3 +35,8 @@
   구버전 에이전트 6개(`orchestrator_agent*.py`, `LangGraph_orchestrator_agent.py`, `sub_agent*.py`, LangMem 원본 그래프),
   `MCP/`·`Chain/`·`Userprofile/` 폴더, `Tools/tool.py`, `State/AgentState.py`, 레거시 `main.py`, `Crawling/crawling.py`,
   미사용 `Agent/orchestration/types.py`, 실험용 노트북 6개. 테스트 169개 통과. 내용은 git 기록에서 복구 가능.
+- [x] 배포 설정 정비(2026-10-28): `Dockerfile`이 레거시 `main.py`(구 `/buyer-agent/buyer_agent_0313`만 제공)를 실행하던 것을
+  `FastAPI.main:app`으로 교체하고 미사용 MCP npm 설치 제거. `.dockerignore`가 `State/`를 빼서 현재 그래프 import가 실패하던 문제 수정.
+  `requirements.txt`에 `DATABASE_URL` 경로가 쓰는 `langgraph-checkpoint-postgres`/`psycopg`/`psycopg-binary`/`psycopg-pool` 추가(venv 버전 고정).
+- [ ] Docker 이미지 빌드 실제 검증(Docker Desktop 미실행으로 미확인). `.dockerignore`에 `.chroma_store/`, `benchmarks/results/` 제외 여부 검토.
+- [ ] `Test/test.py`는 MCP `sequential_thinking`을 쓰는 구버전 수동 스크립트(unittest 수집 대상 아님) — 제거 검토.
