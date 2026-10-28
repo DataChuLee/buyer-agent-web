@@ -28,7 +28,7 @@ from Agent.orchestration import (
     seller_search_worker_node,
     supervisor_node,
 )
-from State.AgentState_personalization import BuyerAgentStateV2, SearchResultItem, UserProfile
+from State.AgentState_personalization import BuyerAgentStateV2, UserProfile
 from Tools.checkout_adapter import (
     SUPPORTED_CHECKOUT_SELLERS,
     build_checkout_session_payload,
@@ -103,16 +103,8 @@ _CONDITION_QUESTIONS: dict[str, dict] = {
         ],
     },
 }
-_CONDITION_PRIORITY = ["brand", "budget", "surface", "position"]
 _PRODUCT_SEARCH_REQUIRED_CONDITIONS = ["brand", "budget", "surface"]
 _CAPABILITY_PRIORITY = ("product_search", "seller_search", "product_analysis")
-_PURCHASE_REQUIRED_FIELDS = [
-    "size",
-    "recipient_name",
-    "phone",
-    "address",
-    "detail_address",
-]
 
 
 class ExtractedConditions(BaseModel):
@@ -326,10 +318,6 @@ def _extract_explicit_product_conditions(message: str) -> dict[str, str]:
         conditions["size"] = match.group(1) or match.group(2)
 
     return conditions
-
-
-def _is_unknown_surface(value: str | None) -> bool:
-    return str(value or "").strip() in {"지면 모름", "잘 모르겠어요", "상관없음"}
 
 
 def _is_fresh_product_search_request(message: str, explicit_conditions: dict[str, str]) -> bool:
