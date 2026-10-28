@@ -10,8 +10,7 @@ LangGraph + FastAPI 기반 AI 쇼핑 에이전트. 사용자 조건 수집 → �
 
 ## Entry Point
 - 실행: `uvicorn FastAPI.main:app --reload`
-- API 서버: `FastAPI/main.py` (현재 버전)
-- 구버전: `main.py` (레거시, 수정 X)
+- API 서버: `FastAPI/main.py`
 
 ## Tech Stack
 - Agent: LangGraph + LangMem (개인화)
@@ -91,9 +90,6 @@ flowchart TD
 - `FastAPI/` → REST API 서버
 - `State/` → AgentState 정의
 - `Crawling/` → 셀러 크롤러
-- `Chain/` → LangChain 체인
-- `MCP/` → Model Context Protocol
-- `Userprofile/` → 유저 프로필 관리
 - `Test/` → 테스트
 
 ## Class-Based / OOP Structure
