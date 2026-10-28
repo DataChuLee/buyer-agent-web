@@ -40,3 +40,9 @@
   `requirements.txt`에 `DATABASE_URL` 경로가 쓰는 `langgraph-checkpoint-postgres`/`psycopg`/`psycopg-binary`/`psycopg-pool` 추가(venv 버전 고정).
 - [ ] Docker 이미지 빌드 실제 검증(Docker Desktop 미실행으로 미확인). `.dockerignore`에 `.chroma_store/`, `benchmarks/results/` 제외 여부 검토.
 - [ ] `Test/test.py`는 MCP `sequential_thinking`을 쓰는 구버전 수동 스크립트(unittest 수집 대상 아님) — 제거 검토.
+- [x] 서비스 코드 최소화(2026-10-28): 저장소 어디서도(또는 테스트에서만) 쓰이지 않던 함수·상수·import 제거 —
+  진단 포맷터/진단 실행기, 중복 `build_product_search_query`(워커와 같은 로직), `web_search_cache.py` 모듈 전체,
+  `is_no_seller_result_answer`, `replace_seller_aliases_in_query`, `select_cheapest_seller_from_markdown`, 미사용 상수들.
+  관련 테스트 6개와 CI 경로 정리. 프런트엔드는 미사용 컴포넌트 2개(`components/ui/`), 백엔드에 없는 엔드포인트를 부르던
+  `/api/buyer-agent/test` 라우트, 미사용 import/변수 제거. 백엔드 테스트 163개 통과, `next build` 통과.
+- [ ] `Tools/seller_selection.select_cheapest_seller`(결정론적 최저가 선택)는 서비스 경로에 연결돼 있지 않고 테스트에서만 쓰임 — 연결 또는 제거 결정 필요.
