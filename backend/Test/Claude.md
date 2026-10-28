@@ -7,7 +7,7 @@
 - `test_condition_sanitization.py` → 조건 정제 단위 테스트
 - `test_seller_normalization.py` → 판매자 정규화 단위 테스트
 - `test_raw_items_cache.py` → raw_items_cache 가격 범위/키워드 필터/중복 제거 단위 테스트
-- `test_cache_primitives.py` → crawl registry exact/fuzzy hit와 web search L1/L2/TTL/손상 캐시 처리 테스트
+- `test_cache_primitives.py` → crawl registry exact/fuzzy hit와 손상 entry 처리 테스트
 - `test_crawler_normalization.py` → 판매처별 크롤 결과 공통 필드 fallback·중복 제거·async 실행 테스트
 - `test_seller_search_agent_module.py`/`test_seller_selection.py` → 실제 외부 검색 없이 seller pipeline의
   `ok`/`no_results`/`error`/`partial_failure`, cache hit/miss/손상, 후보 검증·중복 제거와
