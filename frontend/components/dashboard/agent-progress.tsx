@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 export interface AgentStep {
   id: string;
+  agent?: string | null;
   message: string;
   status: "pending" | "in-progress" | "completed";
 }

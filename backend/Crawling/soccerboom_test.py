@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Any
 from urllib.parse import urljoin
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = "https://soccerboom.co.kr"
 
@@ -35,20 +35,21 @@ def _clean_text(text: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _extract_price_from_card(card) -> int | None:
-    sale_price = card.locator(".description").get_attribute("data-sale_price")
+async def _extract_price_from_card(card) -> int | None:
+    sale_price = await card.locator(".description").get_attribute("data-sale_price")
     price = _parse_price_to_int(sale_price)
     if price is not None:
         return price
 
-    data_price = card.locator(".thumbnail .sale_rate").get_attribute("data-price")
+    data_price = await card.locator(".thumbnail .sale_rate").get_attribute("data-price")
     price = _parse_price_to_int(data_price)
     if price is not None:
         return price
 
     spec_items = card.locator("ul.spec li")
-    for i in range(spec_items.count()):
-        txt = _clean_text(spec_items.nth(i).inner_text())
+    spec_count = await spec_items.count()
+    for i in range(spec_count):
+        txt = _clean_text(await spec_items.nth(i).inner_text())
         if "판매가" in txt:
             price = _parse_price_to_int(txt)
             if price is not None:
@@ -57,7 +58,7 @@ def _extract_price_from_card(card) -> int | None:
     return None
 
 
-def _extract_sizes_from_detail_page(page) -> List[str]:
+async def _extract_sizes_from_detail_page(page) -> List[str]:
     sizes: List[str] = []
     seen = set()
 
@@ -93,10 +94,12 @@ def _extract_sizes_from_detail_page(page) -> List[str]:
 
     for selector in select_candidates:
         selects = page.locator(selector)
-        for i in range(selects.count()):
+        select_count = await selects.count()
+        for i in range(select_count):
             options = selects.nth(i).locator("option")
-            for j in range(options.count()):
-                text = _clean_text(options.nth(j).inner_text())
+            options_count = await options.count()
+            for j in range(options_count):
+                text = _clean_text(await options.nth(j).inner_text())
 
                 mm_match = re.search(r"\b(\d{2,3})\s*mm\b", text, re.I)
                 num_match = re.search(
@@ -112,19 +115,19 @@ def _extract_sizes_from_detail_page(page) -> List[str]:
     return sizes
 
 
-def soccerboom_crawl(
+async def soccerboom_crawl(
     product_keyword: str, min_price: int, max_price: int
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context()
+        page = await context.new_page()
         page.set_default_timeout(15000)
 
         try:
-            page.goto(f"{BASE_URL}/product/search.html", wait_until="domcontentloaded")
+            await page.goto(f"{BASE_URL}/product/search.html", wait_until="domcontentloaded")
 
             # 가격 필드가 있는 실제 상품검색 폼만 선택
             search_form = (
@@ -132,47 +135,50 @@ def soccerboom_crawl(
                 .filter(has=page.locator("#product_price1"))
                 .first
             )
-            search_form.wait_for()
+            await search_form.wait_for()
 
             # strict mode 에러 방지: form 내부에서만 탐색
-            search_form.locator('input[name="keyword"]').fill(product_keyword)
-            search_form.locator("#product_price1").fill(str(min_price))
-            search_form.locator("#product_price2").fill(str(max_price))
+            await search_form.locator('input[name="keyword"]').fill(product_keyword)
+            await search_form.locator("#product_price1").fill(str(min_price))
+            await search_form.locator("#product_price2").fill(str(max_price))
 
-            if search_form.locator("#order_by").count() > 0:
-                search_form.locator("#order_by").select_option("priceasc")
+            order_by_count = await search_form.locator("#order_by").count()
+            if order_by_count > 0:
+                await search_form.locator("#order_by").select_option("priceasc")
 
             # 상품검색 영역의 검색 버튼 클릭
-            search_form.locator('input[type="image"][alt="검색"]').click()
-            page.wait_for_load_state("domcontentloaded")
+            await search_form.locator('input[type="image"][alt="검색"]').click()
+            await page.wait_for_load_state("domcontentloaded")
 
             cards = page.locator(
                 ".xans-search-result.ec-base-product ul.prdList.grid4 > li"
             )
-            cards.first.wait_for()
+            await cards.first.wait_for()
 
             while True:
-                card_count = cards.count()
+                card_count = await cards.count()
 
                 for i in range(card_count):
                     card = cards.nth(i)
 
                     product_name = _clean_text(
-                        card.locator(".description .name a").inner_text()
+                        await card.locator(".description .name a").inner_text()
                     )
 
                     image_url = ""
-                    if card.locator(".thumbnail img").count() > 0:
+                    thumb_img_count = await card.locator(".thumbnail img").count()
+                    if thumb_img_count > 0:
                         image_url = _normalize_url(
-                            card.locator(".thumbnail img").first.get_attribute("src")
+                            await card.locator(".thumbnail img").first.get_attribute("src")
                         )
 
                     product_url = ""
-                    if card.locator(".thumbnail a").count() > 0:
-                        href = card.locator(".thumbnail a").first.get_attribute("href")
+                    thumb_a_count = await card.locator(".thumbnail a").count()
+                    if thumb_a_count > 0:
+                        href = await card.locator(".thumbnail a").first.get_attribute("href")
                         product_url = _normalize_url(href)
 
-                    product_price = _extract_price_from_card(card)
+                    product_price = await _extract_price_from_card(card)
                     if product_price is None:
                         continue
 
@@ -181,15 +187,15 @@ def soccerboom_crawl(
 
                     sizes: List[str] = []
                     if product_url:
-                        detail_page = context.new_page()
+                        detail_page = await context.new_page()
                         detail_page.set_default_timeout(10000)
                         try:
-                            detail_page.goto(product_url, wait_until="domcontentloaded")
-                            sizes = _extract_sizes_from_detail_page(detail_page)
+                            await detail_page.goto(product_url, wait_until="domcontentloaded")
+                            sizes = await _extract_sizes_from_detail_page(detail_page)
                         except PlaywrightTimeoutError:
                             sizes = []
                         finally:
-                            detail_page.close()
+                            await detail_page.close()
 
                     results.append(
                         {
@@ -206,29 +212,30 @@ def soccerboom_crawl(
                     ".xans-search-paging.ec-base-paginate a"
                 ).filter(has_text="다음")
 
-                if next_link.count() > 0 and next_link.first.is_visible():
-                    next_link.first.click()
-                    page.wait_for_load_state("domcontentloaded")
+                next_link_count = await next_link.count()
+                if next_link_count > 0 and await next_link.first.is_visible():
+                    await next_link.first.click()
+                    await page.wait_for_load_state("domcontentloaded")
                     cards = page.locator(
                         ".xans-search-result.ec-base-product ul.prdList.grid4 > li"
                     )
-                    cards.first.wait_for()
+                    await cards.first.wait_for()
                 else:
                     break
 
         finally:
-            context.close()
-            browser.close()
+            await context.close()
+            await browser.close()
 
     return results
 
 
 if __name__ == "__main__":
-    data = soccerboom_crawl("머큐리얼 베이퍼", 100000, 200000)
-    from pprint import pprint
+    import asyncio
 
-    pprint(data)
+    async def _main():
+        data = await soccerboom_crawl("머큐리얼 베이퍼", 100000, 200000)
+        from pprint import pprint
+        pprint(data)
 
-# 해결 사항
-## 사커붐은 다음 페이지 및 사이즈 데이터 수집 잘 수행
-## 하지만, 속도 측면에서 좀 걸리는 것 같음 이를 개선
+    asyncio.run(_main())

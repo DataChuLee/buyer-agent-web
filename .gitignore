@@ -10,6 +10,23 @@ backend/.env
 backend/__pycache__/
 backend/**/*.pyc
 backend/stagehand/.env
+backend/.chroma_store/
+backend/benchmarks/results/
+
+# Local agent/tooling state
+**/.claude/settings.local.json
+**/.claude/scheduled_tasks.lock
+.claude/skills/
+backend/.playwright-mcp/
+
+# Local diagnostics and generated review artifacts
+backend/Test/_diff_reuse.txt
+backend/dashboard-*.png
+backend/*.ipynb
+
+# Personal working documents
+PORTFOLIO_RESUME.md
+career-inventory-ai.md
 
 
 # -----------------------------

@@ -45,38 +45,28 @@ async def _fake_extract_conditions_and_intent(state):
         "user_conditions": dict(state.get("user_conditions", {})),
         "status": "checking",
     }
-    if "분석" in message:
-        return {
-            **base,
-            "intent": "product_analysis",
-            "user_conditions": {
-                **base["user_conditions"],
-                "product_name": "머큐리얼 베이퍼",
-                "seller": "크레이지11",
-            },
-        }
     if any(token in message for token in ["살게", "270", "홍길동"]):
         return {**base, "intent": "purchase_prepare"}
     return {**base, "intent": "chitchat"}
 
 
-async def _fake_parse_analysis(_text: str):
-    return [
-        {
-            "name": "나이키 줌 머큐리얼 베이퍼 16 프로 TF",
-            "seller": "크레이지11",
-            "price": "109,000원",
-            "size": "245, 250, 255, 260, 265, 270",
-            "url": "https://www.crazy11.co.kr/shop/shopdetail.html?branduid=123",
-        },
-        {
-            "name": "나이키 팬텀 GX 2 아카데미",
-            "seller": "크레이지11",
-            "price": "99,000원",
-            "size": "250, 255, 260",
-            "url": "https://www.crazy11.co.kr/shop/shopdetail.html?branduid=456",
-        },
-    ]
+# product_analysis_worker_node가 남기는 분석 카드 형태(이 테스트는 그 이후 구매 준비 흐름만 검증)
+_ANALYSIS_CARDS = [
+    {
+        "name": "나이키 줌 머큐리얼 베이퍼 16 프로 TF",
+        "seller": "크레이지11",
+        "price": "109,000원",
+        "size": "245, 250, 255, 260, 265, 270",
+        "url": "https://www.crazy11.co.kr/shop/shopdetail.html?branduid=123",
+    },
+    {
+        "name": "나이키 팬텀 GX 2 아카데미",
+        "seller": "크레이지11",
+        "price": "99,000원",
+        "size": "250, 255, 260",
+        "url": "https://www.crazy11.co.kr/shop/shopdetail.html?branduid=456",
+    },
+]
 
 
 async def _fake_extract_purchase_fields(message: str, _analysis):
@@ -97,27 +87,12 @@ async def _fake_extract_purchase_fields(message: str, _analysis):
 class PurchasePrepareGraphTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.profile_patch = patch.object(
-            buyer_graph.profile_manager, "ainvoke", AsyncMock(return_value=None)
+            buyer_graph, "save_user_memory", AsyncMock(return_value={})
         )
         self.extract_patch = patch.object(
             buyer_graph,
             "extract_conditions_and_intent",
             side_effect=_fake_extract_conditions_and_intent,
-        )
-        self.analysis_agent_patch = patch.object(
-            buyer_graph,
-            "product_analysis_agent",
-            AsyncMock(return_value="analysis response"),
-        )
-        self.parse_analysis_patch = patch.object(
-            buyer_graph,
-            "_parse_analysis",
-            side_effect=_fake_parse_analysis,
-        )
-        self.build_analysis_cards_patch = patch.object(
-            buyer_graph,
-            "build_analysis_cards",
-            return_value=[],
         )
         self.extract_purchase_patch = patch.object(
             buyer_graph,
@@ -127,32 +102,22 @@ class PurchasePrepareGraphTest(unittest.IsolatedAsyncioTestCase):
 
         self.profile_patch.start()
         self.extract_patch.start()
-        self.analysis_agent_patch.start()
-        self.parse_analysis_patch.start()
-        self.build_analysis_cards_patch.start()
         self.extract_purchase_patch.start()
 
         self.graph = buyer_graph._build_graph(MemorySaver(), InMemoryStore())
         self.config = {"configurable": {"thread_id": "purchase-graph-test"}}
 
     async def asyncTearDown(self):
-        self.parse_analysis_patch.stop()
-        self.build_analysis_cards_patch.stop()
         self.extract_purchase_patch.stop()
-        self.analysis_agent_patch.stop()
         self.extract_patch.stop()
         self.profile_patch.stop()
 
     async def test_purchase_prepare_flow_creates_checkout_session(self):
-        analysis_result = await self.graph.ainvoke(
-            _input_state("크레이지11에서 머큐리얼 베이퍼 분석해줘"),
-            config=self.config,
-        )
-        self.assertEqual(analysis_result["status"], "done")
-        self.assertEqual(len(analysis_result["analysis"]), 2)
-        self.assertEqual(
-            analysis_result["analysis"][0]["product_url"],
-            "https://www.crazy11.co.kr/shop/shopdetail.html?branduid=123",
+        # 분석 턴은 supervisor LLM + interrupt 리뷰를 거치므로 여기선 그 결과 상태만 주입한다.
+        await self.graph.aupdate_state(
+            self.config,
+            {"analysis": _ANALYSIS_CARDS, "status": "done"},
+            as_node="product_analysis_worker_node",
         )
 
         select_result = await self.graph.ainvoke(

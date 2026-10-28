@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useAuth } from "@/components/providers/auth-provider";
 import HistorySidebar from "@/components/dashboard/history-sidebar";
 import DashboardNavbar from "@/components/dashboard/navbar";
 import AnalysisCards from "@/components/dashboard/analysis-cards";
-import ProductCards from "@/components/dashboard/product-cards";
-import SellerCards from "@/components/dashboard/seller-cards";
 import PromptArea from "@/components/dashboard/prompt-area";
-import RequirementChoices from "@/components/dashboard/requirement-choices";
+import RequirementChoices, { type RequirementOption } from "@/components/dashboard/requirement-choices";
 import AgentProgress, { AgentStep } from "@/components/dashboard/agent-progress";
 import PurchaseAutomationCard from "@/components/dashboard/purchase-automation-card";
 import PurchaseApprovalModal from "@/components/dashboard/purchase-approval-modal";
@@ -49,11 +49,24 @@ type AnalysisItem = {
   url?: string | null;
 };
 
+type PendingAction = {
+  type: "ps_review" | "ss_review" | "pa_review" | string;
+  message?: string | null;
+  answer?: string | null;
+  options?: RequirementOption[] | null;
+  cards?: Record<string, unknown>[] | null;
+  resume_mode?: string | null;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  options?: string[] | null;
+  status?: string | null;
+  activeAgent?: string | null;
+  pendingAction?: PendingAction | null;
+  requestId?: string | null;
+  options?: RequirementOption[] | null;
   products?: ProductItem[] | null;
   sellers?: SellerItem[] | null;
   analysis?: AnalysisItem[] | null;
@@ -68,7 +81,7 @@ type ChatMessage = {
 type QuestionItem = {
   key: string;
   question: string;
-  options: string[];
+  options: RequirementOption[];
 };
 
 type ChatConversation = {
@@ -107,6 +120,13 @@ function sortConversations(conversations: ChatConversation[]) {
   );
 }
 
+function getPendingActionLabel(type?: string | null) {
+  if (type === "ps_review") return "시리즈 선택";
+  if (type === "ss_review") return "판매처 선택";
+  if (type === "pa_review") return "상품 선택";
+  return "선택 대기";
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { loading, isAuthenticated, user, signOut } = useAuth();
@@ -130,6 +150,7 @@ export default function DashboardPage() {
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const automationPollTimeoutRef = useRef<number | null>(null);
+  const typingIntervalsRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
@@ -242,6 +263,12 @@ export default function DashboardPage() {
   useEffect(() => {
     return () => {
       clearAutomationPolling();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      Object.values(typingIntervalsRef.current).forEach(clearInterval);
     };
   }, []);
 
@@ -420,6 +447,40 @@ export default function DashboardPage() {
     }
   };
 
+  // ponytail: 백엔드가 완성된 텍스트를 한 번에 보내는 응답(product_search/seller_search 등)을
+  // 프론트에서 타이핑 효과로 흉내낸다. 실제 토큰 스트리밍이 이미 있었던 메시지(content가 비어있지
+  // 않음)는 건드리지 않는다 — startAssistantTyping 호출 여부로 구분한다.
+  const startAssistantTyping = (conversationId: string, messageId: string, fullText: string) => {
+    const existing = typingIntervalsRef.current[messageId];
+    if (existing) clearInterval(existing);
+
+    const CHARS_PER_TICK = 3;
+    const TICK_MS = 20;
+    let revealed = 0;
+    const interval = setInterval(() => {
+      revealed = Math.min(fullText.length, revealed + CHARS_PER_TICK);
+      setConversations((prev) =>
+        sortConversations(
+          prev.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  messages: conversation.messages.map((message) =>
+                    message.id === messageId ? { ...message, content: fullText.slice(0, revealed) } : message
+                  ),
+                }
+              : conversation
+          )
+        )
+      );
+      if (revealed >= fullText.length) {
+        clearInterval(interval);
+        delete typingIntervalsRef.current[messageId];
+      }
+    }, TICK_MS);
+    typingIntervalsRef.current[messageId] = interval;
+  };
+
   const handlePromptSubmit = async (payload: {
     message: string;
     imagePreview: string | null;
@@ -489,6 +550,7 @@ export default function DashboardPage() {
       const decoder = new TextDecoder();
       let buffer = "";
       let receivedDone = false;
+      let streamedContent = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -502,10 +564,16 @@ export default function DashboardPage() {
           if (!part.startsWith("data: ")) continue;
           let event: {
             type: string;
+            agent?: string | null;
+            step?: string | null;
             chunk?: string;
             message?: string;
             response?: string;
-            options?: string[] | null;
+            status?: string | null;
+            active_agent?: string | null;
+            pending_action?: PendingAction | null;
+            request_id?: string | null;
+            options?: RequirementOption[] | null;
             question_sequence?: QuestionItem[] | null;
             products?: ProductItem[] | null;
             sellers?: SellerItem[] | null;
@@ -520,6 +588,7 @@ export default function DashboardPage() {
 
           if (event.type === "stream" && typeof event.chunk === "string") {
             const chunk = event.chunk;
+            streamedContent += chunk;
             setConversations((prev) =>
               sortConversations(
                 prev.map((conversation) =>
@@ -541,6 +610,9 @@ export default function DashboardPage() {
               )
             );
           } else if (event.type === "progress" && event.message) {
+            const stepId = event.step
+              ? `${event.agent ?? "agent"}:${event.step}`
+              : crypto.randomUUID();
             // 이전 in-progress 스텝을 completed로 바꾸고 새 스텝 추가
             setConversations((prev) =>
               sortConversations(
@@ -548,19 +620,29 @@ export default function DashboardPage() {
                   conversation.id === conversationId
                     ? {
                         ...conversation,
-                        messages: conversation.messages.map((message) =>
-                          message.id === assistantMessageId
-                            ? {
-                                ...message,
-                                progressSteps: [
-                                  ...(message.progressSteps ?? []).map((s) =>
-                                    s.status === "in-progress" ? { ...s, status: "completed" as const } : s
-                                  ),
-                                  { id: crypto.randomUUID(), message: event.message!, status: "in-progress" as const },
-                                ],
-                              }
-                            : message
-                        ),
+                        messages: conversation.messages.map((message) => {
+                          if (message.id !== assistantMessageId) return message;
+                          // 이미 스트리밍이 시작되어 progressSteps가 null로 내려간 메시지는
+                          // progress 이벤트로 다시 배열을 만들어 되살리지 않는다 — 되살아나면
+                          // 렌더가 진행 스피너 브랜치로 튀었다가 다시 텍스트로 바뀌는 깜빡임이 생긴다.
+                          if (message.progressSteps === null) return message;
+                          return {
+                            ...message,
+                            progressSteps: [
+                              ...(message.progressSteps ?? [])
+                                .filter((s) => s.id !== stepId)
+                                .map((s) =>
+                                  s.status === "in-progress" ? { ...s, status: "completed" as const } : s
+                                ),
+                              {
+                                id: stepId,
+                                agent: event.agent ?? null,
+                                message: event.message!,
+                                status: "in-progress" as const,
+                              },
+                            ],
+                          };
+                        }),
                       }
                     : conversation
                 )
@@ -572,6 +654,10 @@ export default function DashboardPage() {
               event.response?.trim() && event.response.trim().length > 0
                 ? event.response.trim()
                 : "답변을 생성할 수 없습니다.";
+            // product_search/seller_search 등은 모델 스트리밍 없이 done에 완성된 텍스트가 한 번에
+            // 실려 온다(streamedContent가 비어있음) — 이 경우만 프론트에서 타이핑 효과로 흉내낸다.
+            // chitchat처럼 이미 실제 스트리밍된 메시지는 그대로 둔다.
+            const alreadyStreamed = streamedContent.length > 0;
 
             setConversations((prev) =>
               sortConversations(
@@ -584,7 +670,11 @@ export default function DashboardPage() {
                           message.id === assistantMessageId
                             ? {
                                 ...message,
-                                content: assistantReply,
+                                content: alreadyStreamed ? assistantReply : message.content,
+                                status: event.status ?? null,
+                                activeAgent: event.active_agent ?? null,
+                                pendingAction: event.pending_action ?? null,
+                                requestId: event.request_id ?? null,
                                 options: event.options ?? null,
                                 products: event.products ?? null,
                                 sellers: event.sellers ?? null,
@@ -602,6 +692,10 @@ export default function DashboardPage() {
                 )
               )
             );
+
+            if (!alreadyStreamed) {
+              startAssistantTyping(conversationId, assistantMessageId, assistantReply);
+            }
 
             // 질문 시퀀스가 있으면 로컬 조건 수집 모드 진입
             if (event.question_sequence && event.question_sequence.length > 0) {
@@ -649,11 +743,12 @@ export default function DashboardPage() {
 
   // 로컬 조건 수집: 옵션 선택 시 채팅 메시지 없이 다음 질문으로만 전환
   // 모든 조건 선택 완료 시 한 번에 자동 API 호출
-  const handleConditionSelect = (option: string) => {
+  const handleConditionSelect = (option: RequirementOption) => {
     if (!questionSequence || questionSequence.length === 0) return;
 
     const currentKey = questionSequence[0].key;
-    const newConditions = { ...collectedConditions, [currentKey]: option };
+    const selectedValue = typeof option === "string" ? option : option.value;
+    const newConditions = { ...collectedConditions, [currentKey]: selectedValue };
     const remaining = questionSequence.slice(1);
 
     if (remaining.length > 0) {
@@ -728,34 +823,19 @@ export default function DashboardPage() {
                   isDesktopViewport ? (desktopSidebarOpen ? "lg:left-72" : "lg:left-[60px]") : "left-0"
                 )}
               >
-                {/* Icon */}
-                <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-violet-500/20 ring-1 ring-white/10">
-                  <svg className="h-8 w-8 text-blue-400" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M8 44 C8 44 14 28 28 24 C36 22 46 26 52 22 C56 20 58 16 58 16" />
-                    <path d="M8 44 C8 44 10 50 16 52 C22 54 30 52 36 50 C44 48 52 48 56 44 C60 40 58 34 52 32 C46 30 38 34 30 36 C20 38 12 36 8 44Z" fill="currentColor" fillOpacity="0.08" />
-                    <circle cx="22" cy="40" r="2.5" fill="currentColor" />
-                    <circle cx="34" cy="37" r="2.5" fill="currentColor" />
-                    <circle cx="44" cy="40" r="2.5" fill="currentColor" />
-                  </svg>
-                </div>
-
                 {/* Headline */}
                 <div className="text-center">
                   <h1 className="text-3xl font-bold tracking-tight text-white md:text-4xl">
                     어떤 축구화를 찾고 계세요?
                   </h1>
-                  <p className="mt-2 text-[15px] text-slate-500">
-                    축구화 · 풋살화를 자유롭게 말해주세요
-                  </p>
                 </div>
 
                 {/* Suggestion chips */}
                 <div className="pointer-events-auto flex flex-wrap justify-center gap-2">
                   {[
                     "가성비 좋은 축구화 추천해줘",
-                    "10만원대 풋살화 비교해줘",
-                    "나이키 머큐리얼 최저가 찾아줘",
-                    "아디다스 프레데터 vs 나이키 팬텀",
+                    "나이키 머큐리얼 어디서 사는 게 제일 저렴해?",
+                    "아디다스 프레데터 vs 나이키 팬텀 비교해줘",
                   ].map((suggestion) => (
                     <button
                       key={suggestion}
@@ -785,12 +865,12 @@ export default function DashboardPage() {
                         return (
                           <div
                             key={message.id}
-                            className={`flex items-end gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                            className={`flex items-start gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
                           >
                             {message.role === "assistant" && (
                               <div className="mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 shadow-md">
                                 <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18" strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M2 17L2 8C4 8 5 11 8 12C11 13 11 8 15 7C19 6 22 10 21 14L20 17L2 17M5 17L5 19.5M11 17L11 19.5M17 17L17 19.5" strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                               </div>
                             )}
@@ -805,48 +885,82 @@ export default function DashboardPage() {
                                   <AgentProgress steps={message.progressSteps ?? []} />
                                 </div>
                               ) : message.pending ? (
-                                <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-white/90">
-                                  {message.content}
+                                <div className="text-[15px] leading-relaxed text-white/90">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                                    strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                                    a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline underline-offset-2 hover:text-blue-300">{children}</a>,
+                                    ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-1">{children}</ul>,
+                                    ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-1">{children}</ol>,
+                                    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                                  }}>{message.content}</ReactMarkdown>
                                   <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-white/60 align-middle" />
                                 </div>
-                              ) : message.options && message.options.length > 0 ? (
+                              ) : message.options && message.options.length > 0 && !message.pendingAction ? (
                                 <RequirementChoices
                                   question={message.content}
                                   options={message.options}
                                   onSelect={questionSequence ? handleConditionSelect : (option) =>
-                                    handlePromptSubmit({ message: option, imagePreview: null, selectedTool: null })
+                                    handlePromptSubmit({
+                                      message: typeof option === "string" ? option : option.value,
+                                      imagePreview: null,
+                                      selectedTool: null,
+                                    })
                                   }
                                   disabled={pendingPrompt}
                                 />
                               ) : (
                                 <>
-                                  {message.content ? (
+                                  {message.content && !message.analysis?.length ? (
                                     <div
-                                      className={`whitespace-pre-wrap text-[15px] leading-relaxed ${
+                                      className={`text-[15px] leading-relaxed ${
                                         message.error
                                           ? "rounded-xl bg-rose-500/10 px-4 py-3 text-rose-300 ring-1 ring-rose-500/20"
                                           : "text-white/90"
                                       }`}
                                     >
-                                      {message.content}
-                                    </div>
-                                  ) : null}
-
-                                  {message.products && message.products.length > 0 ? (
-                                    <div className="w-full">
-                                      <ProductCards products={message.products} />
-                                    </div>
-                                  ) : null}
-
-                                  {message.sellers && message.sellers.length > 0 ? (
-                                    <div className="w-full">
-                                      <SellerCards sellers={message.sellers} />
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={{
+                                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                                          strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                                          a: ({ href, children }) => (
+                                            <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline underline-offset-2 hover:text-blue-300">
+                                              {children}
+                                            </a>
+                                          ),
+                                          ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-1">{children}</ul>,
+                                          ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-1">{children}</ol>,
+                                          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                                          code: ({ children }) => <code className="rounded bg-white/10 px-1 py-0.5 text-[13px] font-mono">{children}</code>,
+                                        }}
+                                      >
+                                        {message.content}
+                                      </ReactMarkdown>
                                     </div>
                                   ) : null}
 
                                   {message.analysis && message.analysis.length > 0 ? (
                                     <div className="w-full">
                                       <AnalysisCards analysis={message.analysis} />
+                                    </div>
+                                  ) : null}
+
+                                  {message.pendingAction ? (
+                                    <div className="rounded-xl border border-blue-400/20 bg-blue-400/[0.08] px-4 py-3 text-sm text-blue-50">
+                                      <div className="mb-2 flex items-center gap-2">
+                                        <span className="rounded-md bg-blue-400/15 px-2 py-1 text-xs font-medium text-blue-100">
+                                          {getPendingActionLabel(message.pendingAction.type)}
+                                        </span>
+                                        {message.activeAgent ? (
+                                          <span className="text-xs text-blue-100/70">{message.activeAgent}</span>
+                                        ) : null}
+                                      </div>
+                                      {message.pendingAction.message ? (
+                                        <p className="leading-relaxed text-blue-50/90">
+                                          {message.pendingAction.message} (아래 채팅창에 이름이나 번호를 입력해주세요)
+                                        </p>
+                                      ) : null}
                                     </div>
                                   ) : null}
 

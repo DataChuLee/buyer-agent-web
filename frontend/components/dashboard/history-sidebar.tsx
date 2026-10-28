@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import BrandLogo from "@/components/brand-logo";
 import { cn } from "@/lib/utils";
 
 interface HistoryMessage {
@@ -183,8 +182,7 @@ export default function HistorySidebar({
           <>
             {/* ── Header ── */}
             <div className="flex items-center justify-between px-1">
-              <Link href="/" className="inline-flex items-center gap-2 transition-opacity hover:opacity-70">
-                <BrandLogo className="h-8" />
+              <Link href="/" className="inline-flex items-center transition-opacity hover:opacity-70">
                 <span className="text-[13px] font-bold tracking-tight text-white/80">BuyerAgent</span>
               </Link>
               <button

@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import threading
 from typing import Any
 
@@ -34,15 +33,17 @@ SELLER_DEFAULT_KWARGS = {
 
 
 def normalize_item(seller: str, item: dict[str, Any]) -> dict[str, Any]:
-    product_price = item.get("product_price", item.get("price"))
-    product_url = item.get("product_url", item.get("detail_url", ""))
+    product_price = item.get("product_price")
+    if product_price is None:
+        product_price = item.get("price")
+    product_url = item.get("product_url") or item.get("detail_url") or ""
 
     return {
         "seller": seller,
-        "product_name": item.get("product_name", ""),
+        "product_name": item.get("product_name") or "",
         "product_price": product_price,
-        "sizes": item.get("sizes", []),
-        "image_url": item.get("image_url", ""),
+        "sizes": item.get("sizes") or [],
+        "image_url": item.get("image_url") or "",
         "product_url": product_url,
         "raw": item,
     }
@@ -185,13 +186,11 @@ async def run_one_seller(
     }
 
     async with seller_semaphore:
-        if inspect.iscoroutinefunction(crawler):
-            # Playwright 크롤러는 ProactorEventLoop가 필요 → 새 스레드에서 실행
-            result = await asyncio.to_thread(
-                _run_async_in_new_loop, crawler(**kwargs)
-            )
-        else:
-            result = await asyncio.to_thread(crawler, **kwargs)
+        # 모든 크롤러는 async_playwright 기반 coroutine.
+        # ProactorEventLoop가 필요해 별도 스레드에서 새 loop를 만들어 실행.
+        result = await asyncio.to_thread(
+            _run_async_in_new_loop, crawler(**kwargs)
+        )
 
     return [normalize_item(seller, item) for item in result]
 
