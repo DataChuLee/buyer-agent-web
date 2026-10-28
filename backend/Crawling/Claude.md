@@ -4,10 +4,9 @@
 쇼핑몰 셀러 사이트 크롤링. 상품 정보 수집 후 Tools/crawl_and_index.py로 ChromaDB에 인덱싱.
 
 ## 주요 파일
-- `crawling.py` → **메인 크롤러** (18KB). 여러 셀러 사이트 크롤링 로직 통합
 - `crawler_result.csv` → 크롤링 결과 샘플 데이터
 
-## 테스트 파일 (참고용)
+## 판매처별 크롤러 (`Tools/crawl_and_index.py`가 `seller_total_test.crawl_multiple_sellers`로 호출)
 - `cafostore_test.py`
 - `crazy11_test.py`
 - `redsoccer_test.py`
