@@ -52,23 +52,6 @@ def normalize_seller_crawler(value: str) -> str:
     return canonical["crawler"] if canonical else str(value or "").strip()
 
 
-def replace_seller_aliases_in_query(query: str) -> str:
-    normalized = str(query or "")
-    for canonical in SELLER_CANONICALS.values():
-        display = canonical["display"]
-        aliases = sorted(set(canonical["aliases"]), key=len, reverse=True)
-        for alias in aliases:
-            if alias == display:
-                continue
-            normalized = re.sub(
-                _build_alias_pattern(alias),
-                display,
-                normalized,
-                flags=re.IGNORECASE,
-            )
-    return normalized
-
-
 def find_seller_displays_in_query(query: str) -> list[str]:
     found: list[str] = []
     normalized_query = str(query or "")
