@@ -4,7 +4,6 @@ import re
 import asyncio
 from typing import Any
 from urllib.parse import urlencode, urljoin
-from collections import Counter
 from playwright.async_api import (
     async_playwright,
     BrowserContext,
@@ -14,30 +13,6 @@ from playwright.async_api import (
 
 BASE_URL = "https://www.crazy11.co.kr"
 SEARCH_PATH = "/shop/shopbrand.html"
-
-
-def remove_common_sizes(products: list[dict]) -> list[dict]:
-    """
-    모든 상품의 sizes에 공통적으로 존재하는 값을 제거
-    """
-
-    counter = Counter()
-    total_products = len(products)
-
-    # 각 상품에서 중복 없이 카운트
-    for product in products:
-        counter.update(set(product.get("sizes", [])))
-
-    # 모든 상품에 등장한 값 찾기
-    common_sizes = {size for size, cnt in counter.items() if cnt == total_products}
-
-    # 제거
-    for product in products:
-        product["sizes"] = [
-            s for s in product.get("sizes", []) if s not in common_sizes
-        ]
-
-    return products
 
 
 def _parse_price(text: str) -> int | None:
