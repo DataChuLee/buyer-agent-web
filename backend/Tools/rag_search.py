@@ -1,46 +1,23 @@
 """
 rag_search.py
 =============
-test_0312.ipynb의 LangGraph를 .py로 분리한 파일.
+product_analysis_agent 전용 RAG 검색 + CRAG/Self-RAG 채점 헬퍼.
 
 - vectorstore: crawl_and_index 도구와 공유하는 Chroma 인스턴스
-- rag_search : LangGraph(graph)를 호출하는 LangChain Tool
+- retrieve_analysis_documents_filtered: 판매처/가격대/지면 메타데이터로 명시적 필터링하는 검색
+- build_analysis_cards_from_docs: 검색 문서 → 응답 카드 변환
+- grade_docs_relevance / rewrite_analysis_query / grade_answer_groundedness: CRAG/Self-RAG 채점
 """
 
 import re
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Annotated, Any, Literal
+from typing import Any
 
 from dotenv import load_dotenv
-from langchain_classic.chains.query_constructor.base import (
-    StructuredQueryOutputParser,
-    get_query_constructor_prompt,
-)
-from langchain_classic.chains.query_constructor.schema import AttributeInfo
-from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
-from langchain_community.query_constructors.chroma import ChromaTranslator
+from pydantic import BaseModel, Field
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from typing_extensions import TypedDict
-
-try:
-    from Tools.seller_normalization import (
-        find_seller_displays_in_query,
-        replace_seller_aliases_in_query,
-    )
-except ImportError:
-    from seller_normalization import (
-        find_seller_displays_in_query,
-        replace_seller_aliases_in_query,
-    )
 
 load_dotenv()
 
@@ -54,161 +31,101 @@ try:
 except ImportError:
     from vectorstore_singleton import vectorstore
 
-# ── SelfQueryRetriever 설정 ─────────────────────────────────
-metadata_info = [
-    AttributeInfo(name="seller", description="제품 판매처명", type="string"),
-    AttributeInfo(
-        name="product_price", description="판매 가격 (원 단위 정수)", type="integer"
-    ),
-    AttributeInfo(
-        name="product_category", description="축구화 또는 풋살화", type="string"
-    ),
-    AttributeInfo(name="age_group", description="성인용 또는 유소년용", type="string"),
-    AttributeInfo(
-        name="ground_type", description="FG, AG, HG, TF 등 지면 종류", type="string"
-    ),
-]
 
-query_constructor = (
-    get_query_constructor_prompt(
-        """
-        여러 판매처에서 수집한 축구화 제품 문서
-        1. 가격 표현 해석:
-           - 10만원대 = 100000 이상 200000 미만
-           - 10만원 이상 = 100000 이상
-           - 10만원 이하 = 100000 이하
-        2. 카테고리: 축구화 or 풋살화
-        """,
-        metadata_info,
-    )
-    | model
-    | StructuredQueryOutputParser.from_components()
-)
-
-retriever = SelfQueryRetriever(
-    query_constructor=query_constructor,
-    vectorstore=vectorstore,
-    structured_query_translator=ChromaTranslator(),
-)
-
-# ── 판매자 키워드 & 병렬 검색 ───────────────────────────────
-SELLER_KEYWORDS = {
-    "크레이지11": "크레이지11",
-    "크레이지 11": "크레이지11",
-    "crazy11": "크레이지11",
-    "사커붐": "사커붐",
-    "soccerboom": "사커붐",
-    "레드사커": "레드사커",
-    "redsoccer": "레드사커",
-    "카포스토어": "카포스토어",
-    "cafostore": "카포스토어",
-}
+_GENERIC_KEYWORD_TOKENS = {"축구화", "풋살화", "축구", "풋살", "신발", "추천", "비교", "분석"}
 
 
-def extract_sellers_from_query(query: str) -> list[str]:
-    found = []
-    for keyword, seller in SELLER_KEYWORDS.items():
-        if keyword in query and seller not in found:
-            found.append(seller)
-    return found
+class RagRetrievalError(RuntimeError):
+    """Raised when retrieval infrastructure fails before a result can be judged empty.
+
+    An empty result is a business fact (no indexed document matches the request).
+    An embedding/vector-store exception is an operational failure.  They must not
+    share the same ``[]`` return value, otherwise the API tells the user that no
+    product exists when the search never completed.
+    """
 
 
-def parallel_retrieve(query: str) -> list[Document]:
-    sellers = extract_sellers_from_query(query)
-    if len(sellers) <= 1:
-        return retriever.invoke(query)
-
-    def search_per_seller(seller: str) -> list[Document]:
-        sub_query = f"{seller}에서 " + re.sub(
-            r"([\w가-힣]+(?:과|와|,)\s*)+[\w가-힣]+에서\s*", "", query
-        )
-        return retriever.invoke(sub_query)
-
-    seen_ids: set[str] = set()
-    results: list[Document] = []
-    with ThreadPoolExecutor(max_workers=len(sellers)) as executor:
-        futures = {executor.submit(search_per_seller, s): s for s in sellers}
-        for future in as_completed(futures):
-            for doc in future.result():
-                key = doc.metadata.get("product_url", doc.id or "")
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    results.append(doc)
-    return results
+def _keyword_tokens(product_keyword: str) -> list[str]:
+    """상품 키워드에서 모델 식별에 쓸 유의미 토큰만 추출(브랜드/모델명). 1글자·일반어 제외."""
+    tokens = []
+    for raw in re.split(r"\s+", str(product_keyword or "")):
+        token = raw.strip()
+        if len(token) >= 2 and token not in _GENERIC_KEYWORD_TOKENS:
+            tokens.append(token)
+    return tokens
 
 
-def extract_sellers_from_query(query: str) -> list[str]:
-    return find_seller_displays_in_query(query)
+def retrieve_analysis_documents_filtered(
+    seller_display: str,
+    product_keyword: str,
+    min_price: int,
+    max_price: int,
+    limit: int = 6,
+    ground_type: str | None = None,
+    size: str | None = None,
+    exclude_keys: set[str] | None = None,
+) -> list[Document]:
+    """판매처/가격대/지면/사이즈 메타데이터로 ChromaDB 를 '명시적으로' 필터링하고, 상품명에
+    모델 키워드가 실제로 포함된 문서만 남긴다.
 
+    SelfQueryRetriever(LLM 파싱)에 의존하면 실패 시 필터 없는 similarity_search 로 떨어져,
+    판매처·가격대·모델 조건을 무시한 엉뚱한 상품을 반환하는 문제가 있다. 분석 경로는 호출
+    시점에 이미 판매처·가격대·키워드를 확정적으로 알고 있으므로 LLM 추론 없이 직접 필터링한다.
+    """
+    conditions: list[dict[str, Any]] = []
+    if seller_display:
+        conditions.append({"seller": {"$eq": seller_display}})
+    # min/max 가 기본 전체범위(0~999999)면 가격 필터는 사실상 무제한 → 그래도 안전하게 포함
+    conditions.append({"product_price": {"$gte": int(min_price)}})
+    conditions.append({"product_price": {"$lte": int(max_price)}})
+    if ground_type:
+        conditions.append({"ground_type": {"$eq": ground_type}})
+    size_value: int | None = None
+    if size and str(size).strip().isdigit():
+        size_value = int(size)
+        # size_min/size_max 는 상품의 전체 사이즈 범위라 사이 값이 비어 있어도(예: 245/270만
+        # 판매) 통과할 수 있다 — 아래 size_matches()가 size_text 콤마 목록으로 정확히 재확인한다.
+        conditions.append({"size_min": {"$lte": size_value}})
+        conditions.append({"size_max": {"$gte": size_value}})
 
-def parallel_retrieve(query: str) -> list[Document]:
-    normalized_query = replace_seller_aliases_in_query(query)
-    sellers = find_seller_displays_in_query(normalized_query)
-    if len(sellers) <= 1:
-        return retriever.invoke(normalized_query)
+    where: dict[str, Any] = {"$and": conditions} if len(conditions) > 1 else conditions[0]
 
-    def search_per_seller(seller: str) -> list[Document]:
-        sub_query = f"{seller}에서 " + re.sub(
-            r"([\w가-힣]+(?:과|와|,)\s*)+[\w가-힣]+\s*에서\s*",
-            "",
-            normalized_query,
-        )
-        return retriever.invoke(sub_query)
-
-    seen_ids: set[str] = set()
-    results: list[Document] = []
-    with ThreadPoolExecutor(max_workers=len(sellers)) as executor:
-        futures = {executor.submit(search_per_seller, s): s for s in sellers}
-        for future in as_completed(futures):
-            for doc in future.result():
-                key = doc.metadata.get("product_url", doc.id or "")
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    results.append(doc)
-    return results
-
-
-def retrieve_analysis_documents(query: str, limit: int = 5) -> list[Document]:
+    # 후속 질문("다른 건 없어?")으로 이미 보여준 제품을 제외할 때, 제외분만큼 후보를 더 끌어와
+    # 새 후보가 limit 만큼 남도록 k 를 비례 확대한다. (similarity_search 는 결정론적이라
+    # k 만 넓히고 제외하지 않으면 같은 상위 prefix 가 반복된다.)
+    candidate_count = limit + len(exclude_keys or ())
     try:
-        docs = parallel_retrieve(query)
-    except Exception:
-        docs = []
+        raw_docs = vectorstore.similarity_search(
+            product_keyword or "축구화", k=max(candidate_count * 5, 20), filter=where
+        )
+    except Exception as exc:
+        raise RagRetrievalError("Chroma retrieval did not complete.") from exc
 
-    if not docs:
-        docs = vectorstore.similarity_search(query, k=limit)
+    tokens = _keyword_tokens(product_keyword)
+
+    def name_matches(doc: Document) -> bool:
+        if not tokens:
+            return True
+        name = str(doc.metadata.get("product_name") or "").replace(" ", "")
+        return all(token.replace(" ", "") in name for token in tokens)
+
+    def size_matches(doc: Document) -> bool:
+        if size_value is None:
+            return True
+        available = {part.strip() for part in str(doc.metadata.get("size_text") or "").split(",")}
+        return str(size_value) in available
 
     seen_keys: set[str] = set()
     unique_docs: list[Document] = []
-    for doc in docs:
-        key = (
-            doc.metadata.get("product_url")
-            or doc.metadata.get("product_name")
-            or doc.page_content
-        )
-        if key in seen_keys:
+    for doc in raw_docs:
+        if not name_matches(doc) or not size_matches(doc):
             continue
-        seen_keys.add(key)
-        unique_docs.append(doc)
-        if len(unique_docs) >= limit:
-            break
-
-    return unique_docs
-
-
-def retrieve_analysis_documents(query: str, limit: int = 5) -> list[Document]:
-    normalized_query = replace_seller_aliases_in_query(query)
-
-    try:
-        docs = parallel_retrieve(normalized_query)
-    except Exception:
-        docs = []
-
-    if not docs:
-        docs = vectorstore.similarity_search(normalized_query, k=limit)
-
-    seen_keys: set[str] = set()
-    unique_docs: list[Document] = []
-    for doc in docs:
+        # 이미 보여준 제품 제외(턴 간 추적). 카드/병합 dedup 과 동일한 (seller, name) 복합 키 사용.
+        if exclude_keys:
+            seller = str(doc.metadata.get("seller") or "").strip()
+            name = str(doc.metadata.get("product_name") or "").strip()
+            if f"{seller}|{name}" in exclude_keys:
+                continue
         key = (
             doc.metadata.get("product_url")
             or doc.metadata.get("product_name")
@@ -244,6 +161,37 @@ def _format_size_text(size_text: Any) -> str | None:
     return ", ".join(parts) if parts else None
 
 
+def _clean_product_url(url: Any) -> str | None:
+    """저장된 URL을 정리:
+    1) EUC-KR 검색 파라미터가 깨진 채 들어간 경우 ASCII-only key=value 만 유지.
+    2) 빈 value 파라미터(`sort=`) 제거.
+    3) 레드사커 `/shopdetail.html` 경로는 정답 `/shop/shopdetail.html` 로 교정 (기존 인덱스 보호).
+    """
+    if not url:
+        return None
+    raw = str(url).strip()
+    if not raw:
+        return None
+
+    # 레드사커: 크롤 시 /shop/ 누락된 채 저장된 기존 데이터 fix
+    if "redsoccer.co.kr/shopdetail.html" in raw and "redsoccer.co.kr/shop/shopdetail.html" not in raw:
+        raw = raw.replace("redsoccer.co.kr/shopdetail.html", "redsoccer.co.kr/shop/shopdetail.html")
+
+    if "?" not in raw:
+        return raw
+    base, _, query = raw.partition("?")
+    kept: list[str] = []
+    for pair in query.split("&"):
+        if not pair:
+            continue
+        key, eq, value = pair.partition("=")
+        if not key or not eq or not value:
+            continue
+        if all(ord(c) < 128 for c in key) and all(ord(c) < 128 for c in value):
+            kept.append(f"{key}={value}")
+    return f"{base}?{'&'.join(kept)}" if kept else base
+
+
 def _build_default_features(metadata: dict[str, Any]) -> list[str]:
     features: list[str] = []
 
@@ -262,24 +210,48 @@ def _build_default_features(metadata: dict[str, Any]) -> list[str]:
     return features
 
 
-def build_analysis_cards(query: str, limit: int = 5) -> list[dict[str, Any]]:
-    cards: list[dict[str, Any]] = []
+def build_analysis_cards_from_docs(
+    docs: list[Document], limit: int = 5
+) -> list[dict[str, Any]]:
+    """RAG 문서를 카드로 변환한다.
 
-    for doc in retrieve_analysis_documents(query, limit=limit):
+    `limit`은 전체 카드 개수가 아니라 "판매처당 최대 개수"다 — 예전엔 병합된 docs 순서(라운드로빈
+    인터리빙)에서 앞에서부터 limit개만 자르는 전역 제한이라, 판매처마다 남은 후보 수가 다르면 그
+    절단선 안에서도 특정 판매처 카드가 몰리거나 다른 판매처가 아예 안 보이는 경우가 있었다(카드가
+    판매처별로 묶이지 않고 뒤섞여 보이던 원인). 판매처별로 캡을 걸고, 첫 등장 순서대로 판매처를 묶어
+    반환한다.
+    """
+    # (seller, product_name) 기준 중복 제거 — 같은 셀러가 색상/옵션 URL 다르게 노출하는 경우 대응
+    seen: set[tuple[str, str]] = set()
+    cards_by_seller: dict[str, list[dict[str, Any]]] = {}
+    seller_order: list[str] = []
+
+    for doc in docs:
         metadata = doc.metadata
-        cards.append(
+        name = metadata.get("product_name") or "상품 정보 없음"
+        seller = metadata.get("seller") or ""
+        key = (str(seller).strip(), str(name).strip())
+        if key in seen:
+            continue
+        bucket = cards_by_seller.setdefault(seller, [])
+        if len(bucket) >= limit:
+            continue
+        seen.add(key)
+        if seller not in seller_order:
+            seller_order.append(seller)
+        bucket.append(
             {
-                "name": metadata.get("product_name") or "상품 정보 없음",
-                "seller": metadata.get("seller") or None,
+                "name": name,
+                "seller": seller or None,
                 "price": _format_price_text(metadata.get("product_price")),
                 "size": _format_size_text(metadata.get("size_text")),
                 "features": _build_default_features(metadata),
                 "image": metadata.get("image_url") or None,
-                "url": metadata.get("product_url") or None,
+                "url": _clean_product_url(metadata.get("product_url")),
             }
         )
 
-    return cards
+    return [card for seller in seller_order for card in cards_by_seller[seller]]
 
 
 def format_docs(docs: list[Document]) -> str:
@@ -294,101 +266,70 @@ def format_docs(docs: list[Document]) -> str:
     return "\n\n".join(items)
 
 
-# ── LangGraph ───────────────────────────────────────────────
-class State(TypedDict):
-    messages: Annotated[list, add_messages]
-    intent: str
-    refined_query: str
-    context: str
-    doc_grade: str
-
-
-def classify_intent(state: State) -> dict:
-    last_msg = state["messages"][-1].content
-    history = state["messages"][:-1]
-
-    classifier = (
-        ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """사용자 메시지의 의도를 분류하세요. 반드시 아래 중 하나만 출력하세요.
-- search   : 축구화/풋살화 신규 검색 요청
-- refine   : 이전 검색 결과에 조건 변경/추가 요청
-- chitchat : 검색과 무관한 대화
-
-의도만 출력하세요. 설명 없이.""",
-                ),
-                MessagesPlaceholder("history"),
-                ("human", "{question}"),
-            ]
-        )
-        | model
-        | StrOutputParser()
+# ── CRAG grading / Self-RAG groundedness (product_analysis_agent 전용) ──────
+class _DocRelevance(BaseModel):
+    relevant_indices: list[int] = Field(
+        description="질문에 실제로 답이 되는 문서의 0-based 인덱스 목록"
     )
 
-    intent = (
-        classifier.invoke({"history": history, "question": last_msg}).strip().lower()
+
+async def grade_docs_relevance(query: str, docs: list[Document]) -> list[Document]:
+    """CRAG 스타일: 생성 전에 검색된 문서가 질문과 실제로 관련 있는지 채점."""
+    if not docs:
+        return []
+    summary = "\n".join(
+        f"{i}: {doc.metadata.get('product_name', '')} / {doc.metadata.get('seller', '')} / {doc.page_content[:150]}"
+        for i, doc in enumerate(docs)
     )
-    if intent not in ("search", "refine", "chitchat"):
-        intent = "search"
-    return {"intent": intent}
+    grader = model.with_structured_output(_DocRelevance)
+    result = await grader.ainvoke(
+        f"질문: {query}\n\n문서 목록:\n{summary}\n\n질문에 실제로 답이 되는 문서의 인덱스만 골라주세요."
+    )
+    return [docs[i] for i in result.relevant_indices if 0 <= i < len(docs)]
 
 
-def rewrite_query(state: State) -> dict:
-    last_msg = state["messages"][-1].content
-    if state["intent"] == "search":
-        return {"refined_query": last_msg}
-
+async def rewrite_analysis_query(query: str, conditions: dict[str, Any] | None = None) -> str:
+    """CRAG 스타일: 관련 문서가 하나도 없을 때 재검색용으로 질문을 넓혀 재작성."""
+    condition_text = ", ".join(f"{k}={v}" for k, v in (conditions or {}).items() if v)
     rewriter = (
         ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    """당신은 검색 쿼리 최적화 전문가입니다.
-대화 히스토리에서 기존 검색 조건을 파악하고, 사용자의 새 요청을 반영해
-완전한 단일 검색 쿼리로 재작성하세요.
-규칙: 이전 조건 유지, 변경된 조건만 업데이트, 한국어 1줄만 출력.""",
+                    "검색 결과가 없었던 축구화 쇼핑 질문을, 조건(브랜드/가격/지면 등)은 유지하되 "
+                    "더 넓은 검색어로 한국어 1줄로 재작성하세요. 설명 없이 재작성된 질문만 출력하세요.",
                 ),
-                MessagesPlaceholder("history"),
-                ("human", "새 요청: {question}"),
+                ("human", "질문: {query}\n기존 조건: {conditions}"),
             ]
         )
         | model
         | StrOutputParser()
     )
+    result = await rewriter.ainvoke(
+        {"query": query, "conditions": condition_text or "없음"}
+    )
+    return result.strip()
 
-    refined = rewriter.invoke({"history": state["messages"][:-1], "question": last_msg})
-    return {"refined_query": refined.strip()}
+
+class _Groundedness(BaseModel):
+    grounded: bool = Field(
+        description="답변의 가격/스펙 등 핵심 주장이 문서 내용에 실제로 있으면 true"
+    )
 
 
-def retrieve_node(state: State) -> dict:
-    try:
-        docs = parallel_retrieve(state["refined_query"])
-    except Exception:
-        docs = []
+async def grade_answer_groundedness(answer: str, docs: list[Document]) -> bool:
+    """Self-RAG 스타일: 생성된 답변이 실제로 문서에 근거하는지(hallucination 여부) 채점."""
     if not docs:
-        docs = vectorstore.similarity_search(state["refined_query"], k=4)
-    return {"context": format_docs(docs)}
+        return True
+    checker = model.with_structured_output(_Groundedness)
+    result = await checker.ainvoke(
+        f"문서:\n{format_docs(docs)}\n\n답변:\n{answer}\n\n"
+        "답변에 나온 가격/스펙 등 핵심 주장이 문서에 실제로 있는지 확인하세요."
+    )
+    return result.grounded
 
 
-def retrieve_node(state: State) -> dict:
-    normalized_query = replace_seller_aliases_in_query(state["refined_query"])
-    try:
-        docs = parallel_retrieve(normalized_query)
-    except Exception:
-        docs = []
-    if not docs:
-        docs = vectorstore.similarity_search(normalized_query, k=4)
-    return {"context": format_docs(docs)}
-
-
-def grade_docs(state: State) -> dict:
-    grade = "relevant" if state["context"].strip() else "irrelevant"
-    return {"doc_grade": grade}
-
-
-def generate_node(state: State) -> dict:
+async def _generate_answer(context: str, messages: list) -> str:
     gen_prompt = (
         ChatPromptTemplate.from_messages(
             [
@@ -417,99 +358,4 @@ Context에 있는 정보만 사용해 답변하세요.
         | model
         | StrOutputParser()
     )
-    answer = gen_prompt.invoke(
-        {"context": state["context"], "messages": state["messages"]}
-    )
-    return {"messages": [AIMessage(content=answer)]}
-
-
-def respond_directly(state: State) -> dict:
-    resp = (
-        ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "당신은 축구화 쇼핑 어시스턴트입니다. 친절하게 응답하고, 자연스럽게 축구화 검색으로 유도하세요.",
-                ),
-                MessagesPlaceholder("messages"),
-            ]
-        )
-        | model
-        | StrOutputParser()
-    )
-    answer = resp.invoke({"messages": state["messages"]})
-    return {"messages": [AIMessage(content=answer)]}
-
-
-def ask_clarification(state: State) -> dict:
-    answer = (
-        f"죄송합니다. **'{state['refined_query']}'** 조건으로는 적합한 제품을 찾지 못했습니다.\n\n"
-        "아래 조건을 조정해보시겠어요?\n"
-        "- 💰 가격대 변경\n- 👟 사이즈 범위 확대\n- 🏪 판매처 추가\n- ⚽ 지면 종류 변경 (FG/AG/TF)"
-    )
-    return {"messages": [AIMessage(content=answer)]}
-
-
-def route_by_intent(state: State) -> Literal["rewrite_query", "respond_directly"]:
-    return (
-        "rewrite_query"
-        if state["intent"] in ("search", "refine")
-        else "respond_directly"
-    )
-
-
-def route_by_grade(state: State) -> Literal["generate", "ask_clarification"]:
-    return "generate" if state["doc_grade"] == "relevant" else "ask_clarification"
-
-
-# ── Graph 빌드 ─────────────────────────────────────────────
-builder = StateGraph(State)
-builder.add_node("classify_intent", classify_intent)
-builder.add_node("rewrite_query", rewrite_query)
-builder.add_node("retrieve", retrieve_node)
-builder.add_node("grade_docs", grade_docs)
-builder.add_node("generate", generate_node)
-builder.add_node("respond_directly", respond_directly)
-builder.add_node("ask_clarification", ask_clarification)
-
-builder.add_edge(START, "classify_intent")
-builder.add_conditional_edges("classify_intent", route_by_intent)
-builder.add_edge("rewrite_query", "retrieve")
-builder.add_edge("retrieve", "grade_docs")
-builder.add_conditional_edges("grade_docs", route_by_grade)
-builder.add_edge("generate", END)
-builder.add_edge("respond_directly", END)
-builder.add_edge("ask_clarification", END)
-
-memory = MemorySaver()
-graph = builder.compile(checkpointer=memory)
-
-
-# ── Tool 정의 ───────────────────────────────────────────────
-@tool
-async def rag_search(query: str) -> str:
-    """
-    인덱싱된 축구화 데이터에서 사용자 쿼리에 맞는 제품을 검색하고 비교표를 생성합니다.
-    반드시 crawl_and_index 호출 이후에 사용하세요.
-
-    Args:
-        query: 사용자 검색 쿼리 원문
-    """
-    result = await graph.ainvoke(
-        {"messages": [HumanMessage(content=query)]},
-        config={"configurable": {"thread_id": str(uuid.uuid4())}},
-    )
-    return result["messages"][-1].content
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def test():
-        # 테스트: 벡터스토어가 비어있으므로 ask_clarification 응답 예상
-        result = await rag_search.ainvoke(
-            {"query": "사커붐에서 머큐리얼 FG 성인용 추천해줘"}
-        )
-        print(result)
-
-    asyncio.run(test())
+    return await gen_prompt.ainvoke({"context": context, "messages": messages})
