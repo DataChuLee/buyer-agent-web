@@ -34,12 +34,6 @@ const ExternalLinkIcon = (props: React.SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-const rankStyles = [
-  { badge: "bg-amber-400/15 text-amber-300 ring-1 ring-amber-400/30", label: "1위" },
-  { badge: "bg-slate-400/15 text-slate-300 ring-1 ring-slate-400/30", label: "2위" },
-  { badge: "bg-orange-700/15 text-orange-400 ring-1 ring-orange-700/30", label: "3위" },
-];
-
 export default function AnalysisCards({ analysis }: AnalysisCardsProps) {
   if (!analysis || analysis.length === 0) return null;
 
@@ -56,7 +50,6 @@ export default function AnalysisCards({ analysis }: AnalysisCardsProps) {
       {/* Cards grid */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {analysis.map((item, idx) => {
-          const rank = rankStyles[idx] ?? null;
           return (
             <div
               key={idx}
