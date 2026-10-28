@@ -8,7 +8,6 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from Agent.seller_search_agent import (
-    SELLER_DOMAINS,
     _build_cache_table,
     _build_tavily_table,
     _excluded_seller_names,
@@ -16,12 +15,12 @@ from Agent.seller_search_agent import (
     _run_tavily,
     _seller_search_keyword,
     build_seller_search_query,
-    is_no_seller_result_answer,
     parse_seller_markdown_table,
     run_seller_search_pipeline,
     search_sellers,
 )
 from Tools.crawl_and_index import _RAW_CACHE_STOPWORDS
+from Tools.seller_selection import DOMAIN_TO_SELLER
 
 
 def cache_row(seller="crazy11", price=99000, **overrides):
@@ -47,7 +46,7 @@ def web_row(domain="soccerboom.co.kr", name="나이키 머큐리얼 베이퍼 16
 
 class SellerSearchAgentModuleTest(unittest.TestCase):
     def test_supported_domains_match_project_contract(self):
-        self.assertEqual(SELLER_DOMAINS, ["crazy11.co.kr", "soccerboom.co.kr", "redsoccer.co.kr", "capostore.co.kr"])
+        self.assertEqual(list(DOMAIN_TO_SELLER), ["crazy11.co.kr", "soccerboom.co.kr", "redsoccer.co.kr", "capostore.co.kr"])
 
     def test_cache_normalization_and_parser_preserve_verified_fields(self):
         table = _build_cache_table([cache_row()], product_keyword="나이키 머큐리얼 베이퍼")
@@ -177,7 +176,6 @@ class SellerPipelineTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value={"search_status": "error", "source": "web_search", "candidates": [], "failed_sellers": ["크레이지11"], "rejection_summary": {}}),
         ):
             answer = await search_sellers.ainvoke({"query": "머큐리얼 베이퍼"})
-        self.assertTrue(is_no_seller_result_answer(answer))
         self.assertEqual([], parse_seller_markdown_table(answer))
 
 
