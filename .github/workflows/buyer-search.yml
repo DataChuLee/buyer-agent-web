@@ -11,7 +11,6 @@ on:
       - "backend/Tools/crawl_registry.py"
       - "backend/Tools/seller_normalization.py"
       - "backend/Tools/seller_selection.py"
-      - "backend/Tools/web_search_cache.py"
       - "backend/Test/test_cache_primitives.py"
       - "backend/Test/test_crawler_normalization.py"
       - "backend/Test/test_product_search_agent_module.py"
