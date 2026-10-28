@@ -12,7 +12,7 @@
 - `seller_normalization.py` → 판매자 데이터 정규화
 - `seller_selection.py` → 판매처 후보 검증과 최저가 선택. 지원 도메인·상품 일치·판매 상태·URL·가격·
   사용자 제외를 검사하며 판매가를 정상가보다 우선한다. 동률 정렬은 가격 → 판매처명 → URL이고,
-  유효 후보가 없으면 `status=no_results`, `selected=None`이다. legacy markdown 입력도 같은 검증을 거친다.
+  유효 후보가 없으면 `status=no_results`, `selected=None`이다.
 - `condition_sanitization.py` → 사용자 입력 조건 검증/정제
 
 ## 의존성
