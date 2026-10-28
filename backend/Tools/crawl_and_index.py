@@ -267,18 +267,6 @@ def load_raw_items_cache(keyword: str, min_price: int = 0, max_price: int = 9_99
     return matched_items or None
 
 
-SELLER_INPUT_MAP = {
-    "crazy11": "크레이지11",
-    "크레이지11": "크레이지11",
-    "soccerboom": "사커붐",
-    "사커붐": "사커붐",
-    "redsoccer": "레드사커",
-    "레드사커": "레드사커",
-    "cafostore": "카포스토어",
-    "카포스토어": "카포스토어",
-}
-
-
 def _normalize_sizes(sizes: Any) -> list[int]:
     if not sizes:
         return []
