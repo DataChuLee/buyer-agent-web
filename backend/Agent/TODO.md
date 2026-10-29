@@ -640,3 +640,6 @@ Human-In-the-Loop/CRAG/Self-RAG) 레퍼런스를 참고해 재설계.
   지원 판매처의 상품 URL·판매 상태·판매가(없으면 정상가)를 모두 검증한 후보만 반환하도록 정규화.
   판매처별 웹 검색을 독립 실행해 `ok`/`no_results`/`error`/`partial_failure`를 구분하고 일부 실패 시
   성공 후보와 `failed_sellers`를 함께 유지. 사용자 제외 판매처는 검색 branch와 최종 후보에서 모두 제외.
+- [x] product_analysis_agent: Stage 0의 LLM 채점(CRAG/Self-RAG)을 `filter_non_shoe_docs`/`answer_cites_only_docs`
+  결정적 검사로 교체(흐름·1회 재시도 구조는 유지). 근거와 수치는 `backend/prompts/analysis_answer.yaml` changelog와
+  Tools/TODO.md 참조.
