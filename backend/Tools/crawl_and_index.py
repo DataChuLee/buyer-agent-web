@@ -45,9 +45,9 @@ load_dotenv()
 # 구현은 crawl_registry 모듈에 위임.
 # =============================================================================
 try:
-    from Tools.crawl_registry import is_already_indexed, register_crawl
+    from Tools.crawl_registry import is_already_indexed, mark_seller_failed, recently_failed, register_crawl
 except ImportError:
-    from crawl_registry import is_already_indexed, register_crawl
+    from crawl_registry import is_already_indexed, mark_seller_failed, recently_failed, register_crawl
 
 try:
     from Tools.seller_normalization import (
@@ -419,6 +419,13 @@ async def crawl_and_index(
     seller_list = [
         normalize_seller_crawler(seller) for seller in sellers if seller.strip()
     ]
+    # 최근 접속에 실패한 판매처는 장애가 이어질 가능성이 높아 타임아웃을 다시 기다리지 않고 건너뛴다.
+    skipped = [seller for seller in seller_list if recently_failed(seller)]
+    seller_list = [seller for seller in seller_list if seller not in skipped]
+    if not seller_list:
+        print(f"[최근 실패 판매처] 재크롤 생략 | sellers={skipped}, keyword={product_keyword}")
+        return f"최근 접속에 실패한 판매처라 재크롤 생략 (sellers={skipped}). 기존 인덱스로 검색합니다."
+
     result = await crawl_multiple_sellers(
         sellers=seller_list,
         product_keyword=product_keyword,
@@ -429,6 +436,8 @@ async def crawl_and_index(
 
     items = result["items"]
     errors = result["errors"]
+    for seller in errors:  # errors는 예외로 끝난 판매처만 담는다(정상 0건과 구분)
+        mark_seller_failed(seller)
 
     if not items:
         return f"크롤링 결과 없음. 오류: {errors}"
@@ -437,9 +446,12 @@ async def crawl_and_index(
     added = _add_new_documents(docs)
 
     # 성공 시 영속 레지스트리에 등록 (TTL 24h) — 동기 파일 쓰기이므로 to_thread로 오프로드.
-    await asyncio.to_thread(
-        register_crawl, sellers, product_keyword, min_price, max_price, added
-    )
+    # 실패·생략한 판매처까지 등록하면 사이트가 복구돼도 24시간 재크롤되지 않으므로 실제 성공한 판매처만 등록한다.
+    succeeded = [seller for seller in seller_list if seller not in errors]
+    if succeeded:
+        await asyncio.to_thread(
+            register_crawl, succeeded, product_keyword, min_price, max_price, added
+        )
 
     # Seller Search 재사용을 위해 raw items도 캐시에 저장
     _store_raw_items(sellers, product_keyword, min_price, max_price, items)
