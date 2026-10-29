@@ -18,6 +18,29 @@
 - `crawl_and_index -> Chroma -> rag_search`로 이어지는 Agentic RAG 파이프라인을 구축해 크롤링 기반 상품 데이터를 분석 흐름에 연결
 - 사용자 조건 추출, 후속 질문 생성, 사용자 메모리 저장을 결합해 불완전한 입력에서도 이어지는 상담형 구매 흐름 구현
 - checkout session과 로컬 자동화 워커를 분리해 결제 직전 승인 경계를 명확히 둔 구매 준비 흐름 구현
+- 개선마다 개선 전 코드와 같은 질문·조건으로 다시 측정하는 평가 체계(`experiments/`)를 만들고, 그 과정에서 서비스 버그 8건을 찾아 수정
+
+## Evaluation
+
+개선 전후를 **같은 질문·같은 모델·같은 조건**으로 다시 측정했습니다. 막대는 측정값, 선은 95% 신뢰구간입니다.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/experiments-dark.svg">
+  <img alt="실험별 기준선과 개선 후 비교 차트(95% 신뢰구간 포함)" src="docs/images/experiments-light.svg">
+</picture>
+
+| # | 바꾼 것 | 결과 | 표본 |
+|---|---|---|---|
+| ① | 검색 필터: LLM이 매번 만들던 필터(SelfQuery) → 메타데이터 직접 필터 | 검색 p50 1,364ms → **233ms**, 결과 0개 17/90 → **0/90** | 30문항 × 3회 |
+| ② | LLM 채점(CRAG·Self-RAG) 검증 → 효과 없음(p=1.0) 확인, 원인인 생성 프롬프트 한 줄 수정 + 결정적 검사로 교체 | 답변당 근거 없는 주장 2.56 → **0.23개**, LLM 호출 3 → 1회 | 30문항 × 2회 |
+| ③ | 크롤 캐시 재측정 + 판매처 장애용 실패 캐시 | 응답 p50 73.2초 → **4.9초**, 장애 중 28.6초 → **5.5초** | 24쌍 / 장애 주입 |
+| ④ | 라우팅: 단일 의도 → 다중 기능 + 조건 게이트 | 정답률 66.7% → **96.7%** (p=0.0001) | 60문항 × 3회 |
+| ⑤ | 같은 프롬프트·규칙의 단일 ReAct 에이전트와 비교 | 현재 구조 **96.1%** vs 단일 에이전트 82.2% (p=0.0117) | 60문항 × 3회 |
+
+- **평가 방법**: 개선 전 코드는 git 기록에서 복원하거나 해당 단계만 끈 상태로 같은 조건에서 실행했습니다. 가격·링크·조건 만족은 코드로 대조했고, 근거 없는 주장은 생성 모델과 다른 모델(gpt-4o)이 어느 방식의 답변인지 모르는 상태로 판정한 뒤 표본을 사람이 검수했습니다. 비교는 질문 단위 짝 검정입니다.
+- **평가로 찾은 버그 8건**: 문서에 없는 기능 설명을 요구하던 생성 프롬프트, 정상 문서를 지우던 CRAG, "10만원대" 오해로 생긴 거짓 "결과 없음", 신가드·축구공에 밀려 축구화가 0건이 되던 검색, 장애 중 매 요청 타임아웃 대기, HG·"퓨처" 조건 누락, 분석을 상품 탐색보다 먼저 실행하던 supervisor, "TF용"처럼 한글이 붙은 지면을 놓치던 분석 에이전트. 모두 회귀 테스트로 고정했습니다.
+- **처음 보는 질문으로 한 과적합 확인**: 평가셋과 겹치지 않는 질문(분석 30·라우팅 30)으로 다시 쟀습니다. 분석은 같은 수준(근거 없는 주장 0.28개)이 나왔고 새 버그 1건을 더 찾았습니다. 라우팅은 90.0%로 평가셋(96.7%)보다 낮았고, 단일 에이전트와의 차이도 92.2% vs 87.8%로 줄어(p=0.5) ⑤의 결론은 "다중 기능 요청(100% vs 72%)과 필수 조건 규칙에서 낫다"로 좁혀 말합니다.
+- **한계**: 질문은 직접 작성(검색·분석은 실제 DB 조합에서 규칙 생성)했고, 판정자 LLM의 오판이 있어 ②의 최종값은 상한입니다. 실패 캐시는 실측 타임아웃을 주입한 측정입니다. 상세는 [`experiments/결과_정리.md`](experiments/결과_정리.md).
 
 ## Why I Built This
 
@@ -158,23 +181,23 @@ flowchart TD
     B --> C[Seller Crawlers]
     C --> D[Normalize Product Data]
     D --> E[Upsert Documents into Chroma]
-    E --> F[rag_search]
-    F --> G[SelfQueryRetriever]
-    F --> H[Similarity Search Fallback]
+    E --> F[retrieve_analysis_documents_filtered]
+    F --> G[Chroma metadata filter + 비축구화 제외]
     G --> I[Relevant Documents]
-    H --> I
     I --> J[LLM Generates Comparison Answer]
+    J --> M{가격·URL이 문서에 있나}
+    M -->|아니오| J
     I --> K[Analysis Card Builder]
-    J --> L[Final Response]
+    M -->|예| L[Final Response]
     K --> L
 ```
 
 구현 포인트는 아래와 같습니다.
 
-- 크롤링과 검색을 분리
+- 크롤링과 검색을 분리하고, 같은 요청은 24시간 크롤 캐시·장애 판매처는 10분 실패 캐시로 건너뜀
 - 상품 데이터를 `Document + metadata` 형태로 적재
-- 판매처, 가격, 카테고리, 지면 조건을 retrieval metadata로 활용
-- retrieval 실패 시 similarity search fallback 사용
+- 앞 단계에서 확정한 판매처·가격·지면·모델 조건을 LLM 없이 Chroma 메타데이터 필터로 바로 적용
+- 답변 생성 프롬프트는 `backend/prompts/`에 버전과 변경 근거를 남겨 관리하고, 답변의 가격·URL은 코드로 문서와 대조(실패 시 1회 재생성)
 - 최종 텍스트 응답과 별개로 프론트에서 바로 쓸 수 있는 analysis card 데이터 생성
 
 ## Tech Stack
@@ -258,8 +281,7 @@ python -m unittest discover Test
 
 ## Limitations & Next Steps
 
-- RAG 검색 품질 평가 체계 보강
-- crawler 실패 케이스와 데이터 품질 이슈 대응 강화
-- Agent node 단위 테스트 확대
+- 크롤 단계 상품 분류(현재 비축구화를 상품명 키워드로 제외, 연령대·사이즈 메타데이터 오류 존재)
+- 평가 질문 사람 검수와 실사용 로그 기반 평가(캐시 적중률, 가격 신선도)
+- 실패 캐시를 워커 간 공유 저장소로 이동(현재 프로세스 메모리)
 - checkout automation 지원 판매처 확장
-- 실험 코드와 제품 코드의 분리
