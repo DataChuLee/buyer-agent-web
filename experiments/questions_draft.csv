@@ -1,0 +1,37 @@
+﻿id,split,category,question,gold_candidate,order_candidate,needs_your_decision,why
+T1,tune,clear,아디다스 20만원 이하 FG 축구화 추천해줘,product_search,,N,브랜드·예산·지면 모두 있음
+T2,tune,clear,프레데터 엘리트 파는 곳 알려줘,seller_search,,N,상품명 있음
+T3,tune,clear,미즈노 모렐리아 네오 4 상세 분석 부탁해,product_analysis,,N,상품명 있음
+T4,tune,ambiguous,푸마 축구화 추천해줘,ask,,N,예산·지면 없음 → 서비스 규칙상 되묻기
+T5,tune,none,풋살화랑 축구화 차이 알려줘,none,,N,구매 가이드(도구 없음)
+T6,tune,multi,나이키 15만원 이하 AG 추천하고 판매처도 알려줘,product_search+seller_search,product_search>seller_search,N,조건 충족 + 기능 2개
+E01,eval,clear,나이키 10만원대 TF 풋살화 추천해줘,product_search,,N,조건 충족
+E02,eval,clear,"아디다스 30만원 이하 FG 축구화 골라줘, 미드필더야",product_search,,N,조건 충족(포지션은 선택 조건)
+E03,eval,clear,팬텀 GX 2 엘리트 어디서 팔아?,seller_search,,N,상품명 있음
+E04,eval,clear,코파 퓨어 2 판매처 좀 찾아줘,seller_search,,N,상품명 있음
+E05,eval,clear,크레이지11에 있는 머큐리얼 슈퍼플라이 10 분석해줘,product_analysis,,N,판매처 + 상품명
+E06,eval,clear,퓨처 7 얼티밋 가격이랑 사이즈 비교 분석해줘,product_analysis,,N,상품명 있음
+E07,eval,clear,미즈노 20만원 이하 HG 축구화 보여줘,product_search,,N,조건 충족
+E08,eval,multi,푸마 10만원대 TF 추천해주고 판매처도 같이 알려줘,product_search+seller_search,product_search>seller_search,N,조건 충족 + 기능 2개
+E09,eval,multi,티엠포 레전드 10 파는 곳 찾고 제일 싼 데서 상세 분석해줘,seller_search+product_analysis,seller_search>product_analysis,N,상품명 있음 + 기능 2개
+E10,eval,multi,"아디다스 20만원 이하 AG 추천, 판매처 비교, 분석까지 다 해줘",product_search+seller_search+product_analysis,product_search>seller_search>product_analysis,N,조건 충족 + 기능 3개
+E11,eval,multi,F50 엘리트 판매처 알려주고 분석도 해줘,seller_search+product_analysis,seller_search>product_analysis,N,상품명 있음 + 기능 2개
+E12,eval,multi,나이키 FG 15만원 이하 추천하고 그중 하나 분석해줘,product_search+product_analysis,product_search>product_analysis,N,판매처 단계 없이 분석
+E13,eval,multi,나이키 축구화 추천하고 어디서 파는지도 알려줘,ask,,Y,기능 2개지만 예산·지면 없음 → 되묻기? (서비스 규칙상 ask)
+E14,eval,ambiguous,축구화 하나 사고 싶은데,ask,,Y,조건 전무 → 되묻기 vs 도구 없이 안내
+E15,eval,ambiguous,머큐리얼 어때?,product_analysis,,Y,상품명만 있음 → 분석 vs 가이드
+E16,eval,ambiguous,20만원으로 살 만한 거 있어?,ask,,N,브랜드·지면 없음
+E17,eval,ambiguous,TF 추천,ask,,N,브랜드·예산 없음
+E18,eval,ambiguous,판매처 추천해줘,ask,,N,상품 맥락 없음
+E19,eval,ambiguous,이거 분석해줘,ask,,N,한 턴만 보므로 지시 대상 없음
+E20,eval,ambiguous,크레이지11에서 제일 싼 축구화,ask,,Y,판매처만 있음 → 어느 기능이든 조건 부족
+E21,eval,ambiguous,나이키 팬텀이랑 아디다스 프레데터 중에 뭐가 나아?,product_analysis,,Y,상품 비교 → 분석 vs 일반 가이드
+E22,eval,ambiguous,발볼 넓은데 맞는 축구화 있을까?,ask,,Y,되묻기 vs 가이드
+E23,eval,ambiguous,아식스 10만원대 FG 있어?,product_search,,Y,조건 충족이나 지원 브랜드 아님 → 검색 vs 안내
+E24,eval,ambiguous,사커붐 가격 괜찮아?,none,,Y,판매처 평판 질문 → 도구 없음 vs 되묻기
+E25,eval,none,인조잔디에서 FG 신어도 돼?,none,,N,구매 가이드
+E26,eval,none,스터드 교체형 축구화는 뭐가 달라?,none,,N,구매 가이드
+E27,eval,none,축구화 끈 묶는 법 알려줘,none,,N,잡담·가이드
+E28,eval,none,오늘 경기 이겼어!,none,,N,잡담
+E29,eval,none,너는 무슨 모델이야?,none,,N,잡담
+E30,eval,none,축구화 세탁해도 돼?,none,,N,잡담·가이드
