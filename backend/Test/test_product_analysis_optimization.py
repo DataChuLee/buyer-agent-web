@@ -324,8 +324,9 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
     def test_retrieve_analysis_documents_filtered_applies_size_range_filter(self):
         captured = {}
 
-        def fake_similarity_search(query, k, filter):
+        def fake_similarity_search(query, k, filter, where_document=None):
             captured["filter"] = filter
+            captured["where_document"] = where_document
             return [_product_doc()]
 
         with patch.object(rag_search.vectorstore, "similarity_search", side_effect=fake_similarity_search):
@@ -337,12 +338,14 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn({"size_min": {"$lte": 265}}, captured["filter"]["$and"])
         self.assertIn({"size_max": {"$gte": 265}}, captured["filter"]["$and"])
         self.assertEqual(len(docs), 1)  # size_text "260,265,270" 에 265 포함
+        # 비축구화는 후보 단계에서 제외(결과에서만 거르면 신가드·축구공이 상위 후보를 독차지)
+        self.assertIn({"$not_contains": "신가드"}, captured["where_document"]["$and"])
 
     def test_retrieve_analysis_documents_filtered_excludes_size_mismatch(self):
         # size_min/size_max 범위(260~270)엔 걸려도 실제 size_text(콤마 목록)에 없는 사이즈는 걸러야
         # 한다(중간에 빠진 사이즈까지 있다고 오답하지 않도록).
         with patch.object(
-            rag_search.vectorstore, "similarity_search", side_effect=lambda query, k, filter: [_product_doc()]
+            rag_search.vectorstore, "similarity_search", side_effect=lambda query, k, filter, where_document=None: [_product_doc()]
         ):
             docs = rag_search.retrieve_analysis_documents_filtered(
                 seller_display="크레이지11", product_keyword="머큐리얼",
