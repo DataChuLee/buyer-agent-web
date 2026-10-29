@@ -113,6 +113,12 @@ async def supervisor_node(state: dict[str, Any]) -> Command:
         else:
             ordered = [step for step in decision.remaining_order if step in remaining_requested]
             ordered += [step for step in remaining_requested if step not in ordered]
+            # 상품이 아직 정해지지 않았는데 product_search가 남아 있으면 그것부터 한다. 프롬프트에도 있는 규칙이지만
+            # LLM이 판매처/분석을 먼저 고르는 경우가 실측됨(라우팅 평가 다중 기능 30회 중 8회).
+            has_product_context = bool(state.get("selected_series") or state.get("last_products") or state.get("products"))
+            if "product_search" in remaining_requested and not has_product_context:
+                ordered.remove("product_search")
+                ordered.insert(0, "product_search")
             next_step = ordered[0]
     elif requested_capabilities:
         # 원래 요청된 capability를 이미 다 실행했다면, 사용자가 새로 요청(reset 등으로
