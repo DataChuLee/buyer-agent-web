@@ -92,6 +92,25 @@ class SupervisorNodeRequestedCapabilityGuardTest(unittest.IsolatedAsyncioTestCas
             )
         self.assertEqual(command.goto, "product_search_worker_node")
 
+    async def test_product_search_runs_first_when_no_product_is_known(self):
+        """회귀(실험 5): '추천하고 그중 하나 분석해줘'에서 LLM이 remaining_order에 분석을 먼저 두면
+        상품도 없이 분석부터 실행됐다. 상품 맥락이 없으면 product_search가 항상 먼저여야 한다."""
+        fake_decision = SupervisorDecision(
+            next="product_analysis", remaining_order=["product_analysis", "product_search"]
+        )
+        state = {
+            "messages": [HumanMessage(content="아디다스 10만원대 FG 골라주고 그중에 하나 자세히 분석해줘")],
+            "requested_capabilities": ["product_search", "product_analysis"],
+            "past_steps": [],
+            "user_conditions": {},
+        }
+        with patch.object(supervisor, "_get_supervisor_classifier", return_value=AsyncMock(ainvoke=AsyncMock(return_value=fake_decision))):
+            command = await supervisor.supervisor_node(state)
+            self.assertEqual(command.goto, "product_search_worker_node")
+            # 이전 검색 결과(상품 맥락)가 있으면 LLM 순서를 그대로 존중한다
+            command = await supervisor.supervisor_node({**state, "last_products": [{"name": "프레데터"}]})
+            self.assertEqual(command.goto, "product_analysis_worker_node")
+
     async def test_empty_remaining_order_falls_back_to_requested_list_order(self):
         """remaining_order를 LLM이 채우지 않은 경우, 기존 requested_capabilities 리스트 순서로
         정상 폴백해야 한다(하위 호환)."""
