@@ -1,0 +1,61 @@
+﻿id,category,question,gold,max_ref_sim
+E01,clear,TF 풋살화로 나이키 거 10만원대에서 골라줘,product_search,0.22
+E02,clear,"아디다스 30만원 이하 FG 축구화 골라줘, 미드필더야",product_search,0.22
+E03,clear,팬텀 GX 2 엘리트 어디서 팔아?,seller_search,0.09
+E04,clear,코파 퓨어 2 판매처 좀 찾아줘,seller_search,0.15
+E05,clear,크레이지11에 있는 머큐리얼 슈퍼플라이 10 분석해줘,product_analysis,0.26
+E06,clear,퓨처 7 얼티밋 가격이랑 사이즈 비교 분석해줘,product_analysis,0.12
+E07,clear,미즈노 20만원 이하 HG 축구화 보여줘,product_search,0.31
+E08,multi,푸마 10만원대 TF 추천해주고 판매처도 같이 알려줘,product_search+seller_search,0.33
+E09,multi,티엠포 레전드 10 파는 곳 찾고 제일 싼 데서 상세 분석해줘,seller_search+product_analysis,0.18
+E10,multi,"아디다스 20만원 이하 AG 추천, 판매처 비교, 분석까지 다 해줘",product_search+seller_search+product_analysis,0.2
+E11,multi,F50 엘리트 판매처 알려주고 분석도 해줘,seller_search+product_analysis,0.14
+E12,multi,나이키 FG 15만원 이하 추천하고 그중 하나 분석해줘,product_search+product_analysis,0.16
+E13,multi,나이키 걸로 하나 골라주고 판매처도 같이 알려줘,ask,0.21
+E14,ambiguous,축구화 하나 사고 싶은데,ask,0.12
+E15,ambiguous,머큐리얼 어때?,product_analysis|none,0.2
+E16,ambiguous,20만원으로 살 만한 거 있어?,ask,0.21
+E17,ambiguous,TF 추천,ask,0.14
+E18,ambiguous,판매처 추천해줘,ask,0.25
+E19,ambiguous,이거 분석해줘,ask,0.36
+E20,ambiguous,크레이지11에서 제일 싼 축구화,ask,0.41
+E21,ambiguous,나이키 팬텀이랑 아디다스 프레데터 중에 뭐가 나아?,product_analysis|none,0.1
+E22,ambiguous,발볼 넓은데 맞는 축구화 있을까?,ask|none,0.11
+E23,ambiguous,아식스 10만원대 FG 있어?,product_search|none,0.18
+E24,ambiguous,사커붐 가격 괜찮아?,none,0.14
+E25,none,인조잔디에서 FG 신어도 돼?,none,0.18
+E26,none,스터드 교체형 축구화는 뭐가 달라?,none,0.11
+E27,none,축구화 끈 묶는 법 알려줘,none,0.13
+E28,none,오늘 경기 이겼어!,none,0.08
+E29,none,너는 무슨 모델이야?,none,0.06
+E30,none,축구화 세탁해도 돼?,none,0.12
+E31,clear,아디다스 15만원 이하 TF 풋살화 찾아줘,product_search,0.16
+E32,clear,미즈노 20만원대 FG 축구화 추천 부탁해,product_search,0.29
+E33,clear,나이키 10만원 이하 AG 아동용 축구화 있어?,product_search,0.32
+E34,clear,모렐리아 네오 4 베타 판매하는 곳 알려줘,seller_search,0.17
+E35,clear,프레데터 리그 TF 어디서 살 수 있어?,seller_search,0.12
+E36,clear,레드사커에 있는 티엠포 레전드 10 분석 좀,product_analysis,0.07
+E37,clear,퓨처 8 플레이 사이즈랑 가격 비교해줘,product_analysis,0.18
+E38,multi,미즈노 15만원 이하 HG 추천해주고 파는 곳도 알려줘,product_search+seller_search,0.24
+E39,multi,코파 퓨어 3 판매처 찾아서 분석까지 해줘,seller_search+product_analysis,0.23
+E40,multi,나이키 20만원 이하 TF로 추천하고 판매처 비교에 상세 분석까지,product_search+seller_search+product_analysis,0.26
+E41,multi,아디다스 10만원대 FG 골라주고 그중에 하나 자세히 분석해줘,product_search+product_analysis,0.16
+E42,multi,팬텀 6 엘리트 파는 데 알려주고 비교 분석도 부탁,seller_search+product_analysis,0.08
+E43,multi,푸마 축구화 추천하고 판매처도 알려줘,ask,0.21
+E44,ambiguous,아디다스 축구화 괜찮은 거 있어?,ask,0.1
+E45,ambiguous,15만원대 FG 보여줘,ask,0.1
+E46,ambiguous,AG용으로 하나 골라줘,ask,0.05
+E47,ambiguous,어디서 사는 게 제일 싸?,ask,0.16
+E48,ambiguous,이거 판매처 알려줘,ask,0.29
+E49,ambiguous,사커붐에서 추천해줘,ask,0.2
+E50,ambiguous,프레데터 괜찮아?,product_analysis|none,0.19
+E51,ambiguous,머큐리얼이랑 팬텀 비교하면 어때?,product_analysis|none,0.18
+E52,ambiguous,평발인데 어떤 축구화가 맞을까?,ask|none,0.18
+E53,ambiguous,언더아머 20만원 이하 FG 있어?,product_search|none,0.36
+E54,ambiguous,크레이지11 배송 빨라?,none,0.31
+E55,none,천연잔디용이랑 인조잔디용은 뭐가 달라?,none,0.22
+E56,none,축구화 사이즈는 평소보다 크게 신어야 해?,none,0.13
+E57,none,가죽 축구화 관리는 어떻게 해?,none,0.11
+E58,none,안녕! 반가워,none,0.0
+E59,none,오늘 비 와서 경기 취소됐어,none,0.06
+E60,none,축구화 길들이는 방법 있어?,none,0.11
