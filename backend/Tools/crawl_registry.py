@@ -146,6 +146,22 @@ def register_crawl(
         _save_registry(registry)
 
 
+# 접속 실패(예외/타임아웃)한 판매처는 잠깐 크롤을 건너뛴다. 사이트 장애 중에는 매 요청이 ~22초 타임아웃을
+# 기다린 뒤 기존 인덱스로 답하던 문제(실험 3에서 측정).
+# shortcut: 프로세스 메모리에만 기억 — 워커가 여러 개면 워커마다 한 번씩 실패를 겪는다. 필요해지면 레지스트리 파일로 옮긴다.
+_FAILURE_TTL = timedelta(minutes=10)
+_recent_failures: dict[str, datetime] = {}
+
+
+def mark_seller_failed(seller: str) -> None:
+    _recent_failures[seller.strip()] = datetime.now(timezone.utc)
+
+
+def recently_failed(seller: str, ttl: timedelta = _FAILURE_TTL) -> bool:
+    failed_at = _recent_failures.get(seller.strip())
+    return failed_at is not None and datetime.now(timezone.utc) - failed_at < ttl
+
+
 def registry_path() -> str:
     """디버그/테스트용 — 현재 사용 중인 JSON 경로 노출."""
     return _REGISTRY_PATH
