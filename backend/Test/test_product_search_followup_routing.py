@@ -35,6 +35,18 @@ class ProductSearchFollowupRoutingTest(unittest.IsolatedAsyncioTestCase):
             {"size": "265"},
         )
 
+    def test_extracts_hg_surface_and_puma_future_spelling(self):
+        # 회귀(실험 4): HG가 지면 목록에 없어 새 검색 요청에서 LLM이 잡은 surface까지 지워져 되묻던 문제,
+        # "퓨처" 표기가 시리즈로 인식되지 않아 상품명이 지워져 분석 요청을 되묻던 문제.
+        self.assertEqual(
+            buyer_graph._extract_explicit_product_conditions("미즈노 20만원 이하 HG 축구화 보여줘")["surface"],
+            "HG",
+        )
+        self.assertEqual(
+            buyer_graph._extract_explicit_product_conditions("퓨처 7 얼티밋 가격이랑 사이즈 비교 분석해줘")["product_name"],
+            "퓨쳐",
+        )
+
     def test_extracts_brand_budget_and_surface_from_new_request(self):
         conditions = buyer_graph._extract_explicit_product_conditions(
             "아디다스 10만원대 FG 축구화를 추천해줘"
