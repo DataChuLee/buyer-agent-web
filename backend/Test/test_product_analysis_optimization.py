@@ -79,8 +79,6 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=[doc]),
             ) as crawl_search,
             patch.object(analysis_agent, "_generate_answer", new=AsyncMock(return_value="analysis answer")) as generate_answer,
-            patch.object(analysis_agent, "grade_docs_relevance", new=AsyncMock(side_effect=lambda q, docs: docs)),
-            patch.object(analysis_agent, "grade_answer_groundedness", new=AsyncMock(return_value=True)),
         ):
             result = await analysis_agent.product_analysis_agent(
                 "crazy11에서 머큐리얼 10만원대 비교 분석",
@@ -134,8 +132,6 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(side_effect=fake_crawl_and_search_seller),
             ),
             patch.object(analysis_agent, "_generate_answer", new=AsyncMock(return_value="analysis answer")),
-            patch.object(analysis_agent, "grade_docs_relevance", new=AsyncMock(side_effect=lambda q, docs: docs)),
-            patch.object(analysis_agent, "grade_answer_groundedness", new=AsyncMock(return_value=True)),
         ):
             result = await analysis_agent.product_analysis_agent(
                 "축구화 비교", conditions={}, return_result=True,
@@ -197,7 +193,7 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=[doc]),
             ) as crawl_search,
             patch.object(analysis_agent, "_generate_answer", new=AsyncMock()) as generate_answer,
-            patch.object(analysis_agent, "grade_docs_relevance", new=AsyncMock(return_value=[])),
+            patch.object(analysis_agent, "filter_non_shoe_docs", return_value=[]),
             patch.object(analysis_agent, "rewrite_analysis_query", new=AsyncMock(return_value="넓힌 검색어")),
         ):
             result = await analysis_agent.product_analysis_agent(
@@ -222,8 +218,7 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 analysis_agent, "_generate_answer", new=AsyncMock(side_effect=["첫 답변", "재생성된 답변"])
             ) as generate_answer,
-            patch.object(analysis_agent, "grade_docs_relevance", new=AsyncMock(side_effect=lambda q, docs: docs)),
-            patch.object(analysis_agent, "grade_answer_groundedness", new=AsyncMock(return_value=False)),
+            patch.object(analysis_agent, "answer_cites_only_docs", return_value=False),
         ):
             result = await analysis_agent.product_analysis_agent(
                 "크레이지11에서 머큐리얼 10만원대 비교",
@@ -241,8 +236,6 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(analysis_agent, "_crawl_and_search_seller", new=AsyncMock(return_value=[doc])) as crawl_search,
             patch.object(analysis_agent, "_generate_answer", new=AsyncMock(return_value="analysis answer")),
-            patch.object(analysis_agent, "grade_docs_relevance", new=AsyncMock(side_effect=lambda q, docs: docs)),
-            patch.object(analysis_agent, "grade_answer_groundedness", new=AsyncMock(return_value=True)),
         ):
             await analysis_agent.product_analysis_agent(
                 "크레이지11에서 머큐리얼 사이즈 265 있어?",
@@ -251,6 +244,46 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(crawl_search.await_args.kwargs["size"], "265")
+
+    def test_filter_non_shoe_docs_drops_gloves_and_balls(self):
+        # 사은품 표기("전용쌕/주걱/양말")가 붙은 축구화는 남아야 한다
+        shoe = "아디다스 프레데터 엘리트 LL AG (JR7838) 전용쌕/주걱/양말 #"
+        names = [shoe, "팬텀 GK장갑", "울트라 GK 글러브", "나이키 팬텀 축구공 5호", "머큐리얼 라이트 신가드", "레알마드리드 홈 저지 유니폼"]
+        docs = [Document(page_content=n, metadata={"product_name": n}) for n in names]
+        self.assertEqual([d.metadata["product_name"] for d in rag_search.filter_non_shoe_docs(docs)], [shoe])
+
+    async def test_product_analysis_agent_passes_parsed_price_range_and_retries_false_refusal(self):
+        doc = _product_doc()
+        with (
+            patch.object(analysis_agent, "_crawl_and_search_seller", new=AsyncMock(return_value=[doc])),
+            patch.object(
+                analysis_agent, "_generate_answer",
+                new=AsyncMock(side_effect=["요청하신 조건에 부합하는 축구화 정보를 찾을 수 없습니다.", "표 답변"]),
+            ) as generate_answer,
+        ):
+            result = await analysis_agent.product_analysis_agent(
+                "머큐리얼 10만원대 찾아줘", conditions={"product_name": "머큐리얼"}, return_result=True,
+            )
+
+        first_message = generate_answer.await_args_list[0].args[1][0].content
+        self.assertIn("100,000~199,999원", first_message)
+        self.assertEqual(generate_answer.await_count, 2)
+        self.assertEqual(result.answer, "표 답변")
+
+    def test_answer_cites_only_docs_rejects_price_or_url_not_in_docs(self):
+        doc = _product_doc()
+        price = int(doc.metadata["product_price"])
+        url = doc.metadata["product_url"]
+        self.assertTrue(rag_search.answer_cites_only_docs(f"₩{price:,} [링크]({url})", [doc]))
+        self.assertFalse(rag_search.answer_cites_only_docs(f"₩{price + 1000:,} [링크]({url})", [doc]))
+        self.assertFalse(rag_search.answer_cites_only_docs(f"₩{price:,} [링크](https://other.test/x)", [doc]))
+
+    def test_answer_prompt_is_versioned_and_forbids_invented_features(self):
+        prompt = rag_search._ANSWER_PROMPT
+        self.assertEqual(prompt["name"], "analysis_answer")
+        self.assertIsInstance(prompt["version"], int)
+        self.assertIn("{context}", prompt["system"])
+        self.assertNotIn("기능 키워드", prompt["system"])
 
     def test_build_analysis_cards_from_docs_preserves_product_metadata(self):
         cards = rag_search.build_analysis_cards_from_docs([_product_doc()], limit=5)
