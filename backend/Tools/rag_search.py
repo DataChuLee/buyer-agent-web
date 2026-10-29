@@ -98,8 +98,13 @@ def retrieve_analysis_documents_filtered(
     # k 만 넓히고 제외하지 않으면 같은 상위 prefix 가 반복된다.)
     candidate_count = limit + len(exclude_keys or ())
     try:
+        # 비축구화는 후보 단계에서 뺀다. 결과에서만 거르면 "머큐리얼" 신가드·축구공이 상위 후보를
+        # 독차지해 축구화가 0건이 되는 경우가 있었다(사커붐 머큐리얼: 상위 20개가 전부 신가드/축구공).
         raw_docs = vectorstore.similarity_search(
-            product_keyword or "축구화", k=max(candidate_count * 5, 20), filter=where
+            product_keyword or "축구화",
+            k=max(candidate_count * 5, 20),
+            filter=where,
+            where_document={"$and": [{"$not_contains": k} for k in _NON_SHOE_NAME_KEYWORDS]},
         )
     except Exception as exc:
         raise RagRetrievalError("Chroma retrieval did not complete.") from exc
