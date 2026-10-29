@@ -1,19 +1,22 @@
 """
 rag_search.py
 =============
-product_analysis_agent 전용 RAG 검색 + CRAG/Self-RAG 채점 헬퍼.
+product_analysis_agent 전용 RAG 검색 + 생성 전/후 결정적 검사 헬퍼.
 
 - vectorstore: crawl_and_index 도구와 공유하는 Chroma 인스턴스
 - retrieve_analysis_documents_filtered: 판매처/가격대/지면 메타데이터로 명시적 필터링하는 검색
 - build_analysis_cards_from_docs: 검색 문서 → 응답 카드 변환
-- grade_docs_relevance / rewrite_analysis_query / grade_answer_groundedness: CRAG/Self-RAG 채점
+- filter_non_shoe_docs / answer_cites_only_docs: 생성 전 비축구화 제외, 생성 후 가격·URL 근거 검사
+- rewrite_analysis_query: 문서가 하나도 안 남았을 때 재검색 질의 재작성
 """
 
 import re
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -118,7 +121,8 @@ def retrieve_analysis_documents_filtered(
     seen_keys: set[str] = set()
     unique_docs: list[Document] = []
     for doc in raw_docs:
-        if not name_matches(doc) or not size_matches(doc):
+        # 비축구화(장갑·축구공 등)가 limit 자리를 차지하지 않게 검색 단계에서 먼저 뺀다
+        if not name_matches(doc) or not size_matches(doc) or is_non_shoe_name(doc.metadata.get("product_name")):
             continue
         # 이미 보여준 제품 제외(턴 간 추적). 카드/병합 dedup 과 동일한 (seller, name) 복합 키 사용.
         if exclude_keys:
@@ -266,30 +270,43 @@ def format_docs(docs: list[Document]) -> str:
     return "\n\n".join(items)
 
 
-# ── CRAG grading / Self-RAG groundedness (product_analysis_agent 전용) ──────
-class _DocRelevance(BaseModel):
-    relevant_indices: list[int] = Field(
-        description="질문에 실제로 답이 되는 문서의 0-based 인덱스 목록"
-    )
+# ── 생성 전/후 결정적 검사 (product_analysis_agent 전용) ──────
+# 예전 LLM 채점(CRAG grade_docs_relevance / Self-RAG grade_answer_groundedness)은 같은 질문 30개 x 2회
+# ablation에서 근거 없는 주장 수를 줄이지 못하고(p=1.0) 정상 문서를 과잉 제거해 대체했다.
+# DB에 product_category=축구화로 잘못 들어온 비축구화 상품(크롤 단계 분류 전까지의 방어선).
+# '양말/주걱/인솔/쌕'은 축구화 사은품 표기("전용쌕/주걱/양말")로 상품명에 흔해 넣지 않는다.
+_NON_SHOE_NAME_KEYWORDS = (
+    "장갑", "글러브", "축구공", "풋살공", "볼백", "신가드", "보호대", "스타킹",
+    "유니폼", "저지", "쇼츠", "반바지", "트레이닝복", "자켓", "재킷", "바람막이", "셔츠", "타이즈", "워머",
+    "백팩", "가방", "토트백", "더플백", "슬리퍼", "매트",
+)
 
 
-async def grade_docs_relevance(query: str, docs: list[Document]) -> list[Document]:
-    """CRAG 스타일: 생성 전에 검색된 문서가 질문과 실제로 관련 있는지 채점."""
-    if not docs:
-        return []
-    summary = "\n".join(
-        f"{i}: {doc.metadata.get('product_name', '')} / {doc.metadata.get('seller', '')} / {doc.page_content[:150]}"
-        for i, doc in enumerate(docs)
+def is_non_shoe_name(name: Any) -> bool:
+    return any(k in str(name or "") for k in _NON_SHOE_NAME_KEYWORDS)
+_ANSWER_URL_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
+_ANSWER_PRICE_RE = re.compile(r"₩\s?([\d,]+)|([\d,]{5,})\s*원")
+
+
+def filter_non_shoe_docs(docs: list[Document]) -> list[Document]:
+    """상품명으로 장갑·축구공 같은 비축구화 상품을 뺀다."""
+    return [doc for doc in docs if not is_non_shoe_name(doc.metadata.get("product_name"))]
+
+
+def answer_cites_only_docs(answer: str, docs: list[Document]) -> bool:
+    """답변에 나온 가격·URL이 모두 문서(메타데이터/본문)에 있으면 True."""
+    metas = [doc.metadata for doc in docs]
+    urls = {str(m.get("product_url", "")) for m in metas} | {str(m.get("image_url", "")) for m in metas}
+    prices = {int(m.get("product_price") or 0) for m in metas}
+    prices |= {int(n.replace(",", "")) for doc in docs for n in re.findall(r"[\d,]{5,}", doc.page_content) if n.replace(",", "").isdigit()}
+    answer_prices = [(a or b).replace(",", "") for a, b in _ANSWER_PRICE_RE.findall(answer)]
+    return all(u in urls for u in _ANSWER_URL_RE.findall(answer)) and all(
+        int(p) in prices for p in answer_prices if p.isdigit()
     )
-    grader = model.with_structured_output(_DocRelevance)
-    result = await grader.ainvoke(
-        f"질문: {query}\n\n문서 목록:\n{summary}\n\n질문에 실제로 답이 되는 문서의 인덱스만 골라주세요."
-    )
-    return [docs[i] for i in result.relevant_indices if 0 <= i < len(docs)]
 
 
 async def rewrite_analysis_query(query: str, conditions: dict[str, Any] | None = None) -> str:
-    """CRAG 스타일: 관련 문서가 하나도 없을 때 재검색용으로 질문을 넓혀 재작성."""
+    """관련 문서가 하나도 없을 때 재검색용으로 질문을 넓혀 재작성."""
     condition_text = ", ".join(f"{k}={v}" for k, v in (conditions or {}).items() if v)
     rewriter = (
         ChatPromptTemplate.from_messages(
@@ -311,51 +328,21 @@ async def rewrite_analysis_query(query: str, conditions: dict[str, Any] | None =
     return result.strip()
 
 
-class _Groundedness(BaseModel):
-    grounded: bool = Field(
-        description="답변의 가격/스펙 등 핵심 주장이 문서 내용에 실제로 있으면 true"
-    )
-
-
-async def grade_answer_groundedness(answer: str, docs: list[Document]) -> bool:
-    """Self-RAG 스타일: 생성된 답변이 실제로 문서에 근거하는지(hallucination 여부) 채점."""
-    if not docs:
-        return True
-    checker = model.with_structured_output(_Groundedness)
-    result = await checker.ainvoke(
-        f"문서:\n{format_docs(docs)}\n\n답변:\n{answer}\n\n"
-        "답변에 나온 가격/스펙 등 핵심 주장이 문서에 실제로 있는지 확인하세요."
-    )
-    return result.grounded
+# 프롬프트는 코드와 분리해 버전 관리(backend/prompts/). 버전은 LangSmith trace 메타데이터로 남긴다.
+_ANSWER_PROMPT = yaml.safe_load(
+    (Path(__file__).resolve().parents[1] / "prompts" / "analysis_answer.yaml").read_text(encoding="utf-8")
+)
 
 
 async def _generate_answer(context: str, messages: list) -> str:
     gen_prompt = (
         ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """You are a soccer shoe recommendation assistant.
-Context에 있는 정보만 사용해 답변하세요.
-
-## Product Context
-{context}
-
-## Output Format
-- Context에 있는 **모든 제품**을 Markdown table로 표시하세요.
-- 표 컬럼: 판매처 | 상품명 | 가격 | 사이즈 | 주요 특징 | 이미지 | 링크
-- 가격: ₩ 단위
-- 사이즈: size_text에 있는 전체 사이즈 목록 표시. 사용자가 요청한 사이즈가 포함되면 **굵게** 강조
-- 주요 특징: ground_type 해석 + age_group + 기능 키워드 2개↑
-- 이미지: ![이미지](이미지URL)
-- 링크: [🔗 제품 상세보기](상품URL)
-- Context가 완전히 비어있을 때만: "요청하신 조건에 부합하는 축구화 정보를 찾을 수 없습니다."
-- 절대 임의로 정보 생성 금지""",
-                ),
-                MessagesPlaceholder("messages"),
-            ]
+            [("system", _ANSWER_PROMPT["system"]), MessagesPlaceholder("messages")]
         )
         | model
         | StrOutputParser()
     )
-    return await gen_prompt.ainvoke({"context": context, "messages": messages})
+    return await gen_prompt.ainvoke(
+        {"context": context, "messages": messages},
+        config={"metadata": {"prompt_name": _ANSWER_PROMPT["name"], "prompt_version": _ANSWER_PROMPT["version"]}},
+    )
