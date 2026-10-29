@@ -55,3 +55,16 @@
 - [x] 디스크 캐시 timestamp 내구성 보강: raw item/crawl registry/web search cache가 timezone 없는 ISO
   timestamp 또는 손상된 entry를 만나도 전체 조회를 중단하지 않고 UTC로 정규화하거나 해당 entry만
   건너뛰도록 수정. L1/L2 hit, TTL 만료, fuzzy registry hit 회귀 테스트 추가.
+- [x] LLM 채점(CRAG `grade_docs_relevance`, Self-RAG `grade_answer_groundedness`)을 결정적 검사로 대체:
+  `filter_non_shoe_docs`(장갑·글러브·축구공 상품명 제외), `answer_cites_only_docs`(답변 가격·URL이 문서에 있는지).
+  같은 질문 30개 x 2회 ablation에서 LLM 채점은 근거 없는 주장 수를 줄이지 못했고(부호검정 p=1.0) 정상 문서 91건을
+  과잉 제거해 정답 있는 질문을 '결과 없음'으로 만들었음. 실행당 LLM 호출 3회 → 1회.
+- [x] 답변 생성 프롬프트를 `backend/prompts/analysis_answer.yaml`로 분리(version/changelog). v2에서 원인이던
+  '주요 특징: 기능 키워드 2개↑' 규칙을 '문서에 있는 지면/연령대만'으로 교체. trace 메타데이터에 prompt_version 기록.
+- [x] 비축구화 제외를 검색 단계(`retrieve_analysis_documents_filtered`)로 당겨 limit 자리를 차지하지 않게 하고, 키워드를
+  DB 전수(1902건) 확인으로 확장(장갑·축구공·신가드·유니폼·가방 등 334건, 이 중 상품명에 축구화·풋살화가 들어간 문서 0건). 사은품 표기 '전용쌕/주걱/양말'은 제외 키워드에서 뺌.
+- [ ] DB 데이터 품질: 비축구화가 product_category=축구화로 들어옴(크롤 단계 분류가 근본 해결, 키워드 목록 밖 상품은
+  여전히 통과 — 예: 'WE 베이스 티'), 상품명 '쥬니어'인데 age_group=성인용인 문서 존재.
+- [x] 생성 모델이 '10만원대/20만원대'를 잘못 해석해 필터를 통과한 문서를 버리고 '찾을 수 없습니다'로 답하던 문제:
+  `product_analysis_agent`가 파싱한 가격 범위를 숫자로 함께 전달 + 문서가 있는데 거절하면 1회 재생성.
+  (원인 확인과 수정안은 평가셋 Q11·Q20으로 찾았으므로 평가셋 과적합 가능성 있음)
