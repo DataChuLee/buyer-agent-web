@@ -647,3 +647,5 @@ Human-In-the-Loop/CRAG/Self-RAG) 레퍼런스를 참고해 재설계.
   요청에서 LLM이 잡은 surface까지 지워져 되묻던 문제, 시리즈 별칭에 '퓨처' 표기가 없어 상품명이 지워져 분석 요청을
   되묻던 문제. 현재 버전 정답률 91.7% → 96.7%(분명한 질문 78.6% → 92.9%).
 - [ ] '미즈노 20만원 이하 HG 축구화 보여줘'에 요청하지 않은 seller_search가 붙는 LLM 추출 오류(3/3 재현).
+- [x] supervisor: 상품 맥락(selected_series/last_products/products)이 없는데 product_search가 남아 있으면 항상 먼저 실행.
+  LLM(gpt-5.4-nano)이 remaining_order에 판매처/분석을 먼저 두는 경우가 실측됨(다중 기능 정답 30회 중 8회) → 수정 후 30/30.
