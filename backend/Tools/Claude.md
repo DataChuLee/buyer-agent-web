@@ -4,10 +4,11 @@
 에이전트가 호출하는 도구 함수 모음. LangGraph 노드에서 직접 import해서 사용.
 
 ## 주요 파일
-- `rag_search.py` → ChromaDB 기반 RAG 검색. `Agent/product_analysis_agent.py`용 CRAG/Self-RAG 채점 함수도
-  포함: `grade_docs_relevance`(생성 전 검색 문서가 질문과 실제로 관련 있는지 채점), `rewrite_analysis_query`
-  (관련 문서가 없을 때 재검색용 질의 재작성), `grade_answer_groundedness`(생성 후 답변의 가격/스펙 주장이
-  문서에 실제로 있는지 채점, hallucination 감지)
+- `rag_search.py` → ChromaDB 기반 RAG 검색. `Agent/product_analysis_agent.py`용 결정적 검사도 포함:
+  `filter_non_shoe_docs`(생성 전 장갑·축구공 등 비축구화 제외), `answer_cites_only_docs`(생성 후 답변의
+  가격·URL이 문서에 있는지 코드로 검사), `rewrite_analysis_query`(문서가 하나도 안 남았을 때 재검색 질의 재작성).
+  예전 LLM 채점(CRAG/Self-RAG)은 ablation에서 효과가 없어 대체됨. 답변 생성 프롬프트는
+  `backend/prompts/analysis_answer.yaml`(버전·changelog)에서 읽고, 버전을 trace 메타데이터로 남긴다.
 - `crawl_and_index.py` → 크롤링 결과 → ChromaDB 인덱싱 파이프라인
 - `seller_normalization.py` → 판매자 데이터 정규화
 - `seller_selection.py` → 판매처 후보 검증과 최저가 선택. 지원 도메인·상품 일치·판매 상태·URL·가격·
