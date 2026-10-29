@@ -649,3 +649,6 @@ Human-In-the-Loop/CRAG/Self-RAG) 레퍼런스를 참고해 재설계.
 - [ ] '미즈노 20만원 이하 HG 축구화 보여줘'에 요청하지 않은 seller_search가 붙는 LLM 추출 오류(3/3 재현).
 - [x] supervisor: 상품 맥락(selected_series/last_products/products)이 없는데 product_search가 남아 있으면 항상 먼저 실행.
   LLM(gpt-5.4-nano)이 remaining_order에 판매처/분석을 먼저 두는 경우가 실측됨(다중 기능 정답 30회 중 8회) → 수정 후 30/30.
+- [x] `_extract_ground_type`가 "TF용"처럼 한글이 붙은 지면을 못 잡던 버그 수정(`\b`가 한글을 단어 문자로 봄 → 영숫자 경계만 사용).
+  처음 보는 질문 30개 x 2회 확인에서 발견: 생성에 쓴 문서의 21.1%가 지면 조건 불만족 → 수정 후 0/292.
+- [ ] 라우팅: 요청하지 않은 seller_search를 붙이는 LLM 추출 오류(처음 보는 질문에서도 재현, 상품 탐색 단독 요청).
