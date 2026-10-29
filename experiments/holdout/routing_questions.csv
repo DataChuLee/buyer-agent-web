@@ -1,0 +1,31 @@
+﻿id,category,question,gold,max_ref_sim
+H01,clear,나이키 HG 15만원 이하로 찾아줘,product_search,0.29
+H02,clear,MG용 아디다스 축구화 20만원대 추천,product_search,0.27
+H03,clear,푸마 IC 실내화 10만원 이하 있으면 보여줘,product_search,0.21
+H04,clear,퓨처 9 프로 어디서 팔아?,seller_search,0.28
+H05,clear,퓨쳐 얼티밋 파는 데 알려줘,seller_search,0.16
+H06,clear,Mercurial Vapor 16 판매처 찾아줘,seller_search,0.14
+H07,clear,울트라 5 플레이 가격 비교 분석 부탁해,product_analysis,0.2
+H08,clear,카포스토어 모렐리아 2 재팬 분석해줘,product_analysis,0.18
+H09,multi,아디다스 HG 20만원 이하 골라주고 어디서 사는지도,product_search+seller_search,0.23
+H10,multi,미즈노 MG 15만원대 추천하고 그중 하나 분석까지,product_search+product_analysis,0.43
+H11,multi,퓨처 7 플레이 판매처 찾고 상세 분석도 해줘,seller_search+product_analysis,0.23
+H12,multi,푸마 FG 10만원대로 고르고 파는 곳 비교에 분석까지 전부,product_search+seller_search+product_analysis,0.16
+H13,multi,F50 리그 어디서 파는지랑 분석 같이 알려줘,seller_search+product_analysis,0.19
+H14,multi,나이키 축구화 골라주고 분석도 해줘,ask,0.24
+H15,ambiguous,HG 구장에서 신을 만한 거 골라줘,ask,0.18
+H16,ambiguous,10만원 안쪽으로 괜찮은 거,ask,0.15
+H17,ambiguous,미즈노 거 뭐 있어?,ask,0.12
+H18,ambiguous,그거 어디서 팔아?,ask,0.33
+H19,ambiguous,레드사커에서 하나 골라줘,ask,0.27
+H20,ambiguous,티엠포 어때?,product_analysis|none,0.22
+H21,ambiguous,칼발인데 맞는 거 있을까,ask|none,0.22
+H22,ambiguous,뉴발란스 HG 20만원 이하 있어?,product_search|none,0.36
+H23,none,HG랑 FG 스터드 모양 차이가 뭐야?,none,0.39
+H24,none,인조잔디에서 오래 신으려면 뭘 조심해?,none,0.22
+H25,none,축구화 냄새 없애는 법,none,0.21
+H26,none,고마워 덕분에 잘 골랐어,none,0.13
+H27,none,내일 조기축구 가는데 설렌다,none,0.09
+H28,none,풋살장 바닥은 보통 뭐야?,none,0.11
+H29,none,축구화 끈은 몇 번째 구멍까지 묶어?,none,0.15
+H30,none,너 이름이 뭐야?,none,0.14
