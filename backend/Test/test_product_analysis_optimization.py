@@ -64,6 +64,12 @@ class ProductAnalysisOptimizationTest(unittest.IsolatedAsyncioTestCase):
             ["crazy11", "soccerboom", "redsoccer", "cafostore"],
         )
 
+    def test_extract_ground_type_when_korean_suffix_is_attached(self):
+        # 회귀(과적합 확인 세트): "TF용"처럼 한글이 붙으면 \b 경계가 없어 지면 필터가 빠졌다
+        self.assertEqual(analysis_agent._extract_ground_type("15만원 이하, 팬텀 축구화, TF용 추천해줘"), "TF")
+        self.assertEqual(analysis_agent._extract_ground_type("FG/MG 겸용"), "FG")
+        self.assertIsNone(analysis_agent._extract_ground_type("STF100 모델"))
+
     def test_extract_sellers_uses_explicit_seller(self):
         self.assertEqual(
             analysis_agent._extract_sellers("crazy11에서 머큐리얼 비교", {}),
