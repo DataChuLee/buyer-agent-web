@@ -48,9 +48,9 @@ Supervisor/워커 노드들은 `Command(goto=...)`로 스스로 다음 목적지
   `rejection_summary`로 표현한다. 부분 실패에서는 성공 후보를 버리지 않는다.
 - `product_analysis_agent.py` → 크롤링 + RAG 분석 파이프라인. `create_react_agent`로 감싸지 않고
   결정적 함수로 유지(카드 생성이 RAG `docs` 메타데이터에 의존하고, 과거 AgentExecutor를 지연시간/
-  hallucination 때문에 제거한 이력이 있어 되돌리지 않음). CRAG 스타일 `grade_docs_relevance`(생성 전
-  문서 관련성 검증) + Self-RAG 스타일 `grade_answer_groundedness`(생성 후 답변의 문서 근거 검증)를
-  각각 1회 재시도로 추가해 "관련 없는 문서로 답변"/"가격·스펙 hallucination"을 방지한다.
+  hallucination 때문에 제거한 이력이 있어 되돌리지 않음). 생성 전 `filter_non_shoe_docs`(비축구화 제외,
+  전부 빠지면 질의 재작성 후 1회 재검색) + 생성 후 `answer_cites_only_docs`(가격·URL 코드 검사, 실패 시
+  1회 재생성). 예전 LLM 채점(CRAG/Self-RAG)은 근거 없는 주장을 줄이지 못하고 정상 문서를 과잉 제거해 대체됨.
 
 ## Orchestration 모듈 (`orchestration/`)
 - `supervisor.py` → `supervisor_node`가 매 턴 대화·`past_steps`·조건을 보고 다음 액션
