@@ -127,7 +127,8 @@ def _extract_ground_type(
         [str(text or ""), *(str(v) for v in (conditions or {}).values())]
     ).upper()
     for ground in _GROUND_TYPES:
-        if re.search(rf"\b{ground}\b", haystack):
+        # \b는 한글도 단어 문자로 봐서 "TF용"의 TF를 못 잡는다 → 영숫자만 경계로 본다
+        if re.search(rf"(?<![A-Z0-9]){ground}(?![A-Z0-9])", haystack):
             return ground
     return None
 
