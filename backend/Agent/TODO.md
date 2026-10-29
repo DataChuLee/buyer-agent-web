@@ -643,3 +643,7 @@ Human-In-the-Loop/CRAG/Self-RAG) 레퍼런스를 참고해 재설계.
 - [x] product_analysis_agent: Stage 0의 LLM 채점(CRAG/Self-RAG)을 `filter_non_shoe_docs`/`answer_cites_only_docs`
   결정적 검사로 교체(흐름·1회 재시도 구조는 유지). 근거와 수치는 `backend/prompts/analysis_answer.yaml` changelog와
   Tools/TODO.md 참조.
+- [x] 조건 추출 규칙 누락 2건 수정(실험 4 라우팅 평가 60문항 x 3회에서 발견): `BOOT_SURFACE_KEYWORDS`에 HG가 없어 새 검색
+  요청에서 LLM이 잡은 surface까지 지워져 되묻던 문제, 시리즈 별칭에 '퓨처' 표기가 없어 상품명이 지워져 분석 요청을
+  되묻던 문제. 현재 버전 정답률 91.7% → 96.7%(분명한 질문 78.6% → 92.9%).
+- [ ] '미즈노 20만원 이하 HG 축구화 보여줘'에 요청하지 않은 seller_search가 붙는 LLM 추출 오류(3/3 재현).
