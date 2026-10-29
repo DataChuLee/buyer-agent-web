@@ -2,7 +2,7 @@
 Product analysis flow.
 
 This module intentionally keeps the required real-time crawl and
-SelfQueryRetriever-backed RAG search, but removes the extra AgentExecutor
+metadata-filtered RAG search, but removes the extra AgentExecutor
 round trips that only decided which two fixed tools to call.
 """
 
@@ -36,9 +36,9 @@ from Agent.product_search_agent import _extract_requested_price_range
 from Tools.crawl_and_index import crawl_and_index
 from Tools.rag_search import (
     _generate_answer,
+    answer_cites_only_docs,
+    filter_non_shoe_docs,
     format_docs,
-    grade_answer_groundedness,
-    grade_docs_relevance,
     RagRetrievalError,
     retrieve_analysis_documents_filtered,
     rewrite_analysis_query,
@@ -329,10 +329,10 @@ async def product_analysis_agent(
         result = no_result()
         return result if return_result else result.answer
 
-    # CRAG: 생성 전에 검색된 문서가 실제로 질문과 관련 있는지 채점. 전부 무관하면 질문을
+    # 생성 전: 메타데이터 필터가 못 거르는 비축구화(장갑·축구공)를 뺀다. 전부 빠지면 질문을
     # 넓혀 재작성해 1회만 재크롤링/재검색한다(무한 루프 방지 — product_search_agent의
     # _run_surface_expanded_search와 동일한 "한 번만 재시도" 철학).
-    graded_docs = await grade_docs_relevance(search_query, all_docs)
+    graded_docs = filter_non_shoe_docs(all_docs)
     if not graded_docs:
         rewritten_query = await rewrite_analysis_query(search_query, conditions)
         try:
@@ -355,23 +355,30 @@ async def product_analysis_agent(
             unavailable = ProductAnalysisResult(answer=_build_retrieval_unavailable_answer(), docs=[])
             return unavailable if return_result else unavailable.answer
         retry_docs = _merge_docs_round_robin(docs_per_seller_retry)
-        graded_docs = await grade_docs_relevance(search_query, retry_docs) if retry_docs else []
+        graded_docs = filter_non_shoe_docs(retry_docs)
         if not graded_docs:
             result = no_result()
             return result if return_result else result.answer
 
     all_docs = graded_docs
     context = format_docs(all_docs)
-    answer = await _generate_answer(context, [HumanMessage(content=search_query)])
+    # LLM이 "10만원대"를 잘못 해석해 이미 필터를 통과한 문서를 버리고 "찾을 수 없습니다"로 답하던 문제 →
+    # 파싱해 둔 가격 범위를 숫자로 함께 준다.
+    generation_query = (
+        search_query
+        if (min_price, max_price) == DEFAULT_PRICE_RANGE
+        else f"{search_query}\n(가격 조건: {min_price:,}~{max_price:,}원)"
+    )
+    answer = await _generate_answer(context, [HumanMessage(content=generation_query)])
 
-    # Self-RAG: 생성된 답변이 실제로 문서에 근거하는지(가격/스펙 hallucination) 검증.
-    # 근거 없으면 "문서에 없는 내용은 말하지 말라"는 강화된 지시로 1회만 재생성한다.
-    if not await grade_answer_groundedness(answer, all_docs):
+    # 생성 후: 답변의 가격·URL이 문서에 없거나, 문서가 있는데 "찾을 수 없습니다"로 답하면 강화된 지시로
+    # 1회만 재생성한다(LLM 채점 대신 코드 검사 — 근거: backend/prompts/analysis_answer.yaml changelog).
+    if not answer_cites_only_docs(answer, all_docs) or "찾을 수 없습니다" in answer:
         answer = await _generate_answer(
             context,
             [
                 HumanMessage(
-                    content=f"{search_query}\n\n"
+                    content=f"{generation_query}\n\n"
                     "(주의: Context에 없는 가격/스펙/기능은 절대 언급하지 마세요.)"
                 )
             ],
