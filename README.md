@@ -46,11 +46,11 @@ Buyer Agent를 제안했습니다. 이 에이전트는 여러 판매처를 아�
 
 ## Key Contributions
 
-- `LangGraph` 기반 Buyer Agent를 설계하고, 상품 추천·판매처 탐색·상품 분석 중 다음 작업은 supervisor가 매 단계 다시 판단하도록 함
+- `LangGraph` 기반 Buyer Agent 설계: 상품 추천·판매처 탐색·상품 분석 중 다음 작업을 supervisor가 매 단계 다시 판단
 - `FastAPI + Next.js` 구조에서 Agent 진행 상태와 결과를 `SSE`로 실시간 스트리밍
 - 크롤링한 상품 데이터를 분석 흐름에 잇는 Agentic RAG 파이프라인(`crawl_and_index -> Chroma -> rag_search`)
 - 사용자 조건 추출, 후속 질문 생성, 사용자 메모리 저장으로 입력이 불완전해도 이어지는 상담형 구매 흐름
-- 평가 체계(`experiments/`)를 만들어 개선마다 개선 전 코드와 같은 질문·조건으로 다시 측정, 그 과정에서 서비스 버그 8건을 찾아 수정
+- 개선 전 코드와 같은 질문·조건으로 다시 재는 평가 체계(`experiments/`)를 만들고, 그 과정에서 서비스 버그 8건을 찾아 수정
 
 ## Architecture
 
