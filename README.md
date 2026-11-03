@@ -14,8 +14,6 @@
 
 https://github.com/user-attachments/assets/68ed86c8-f8c9-4a0a-825c-842ac4a33fc2
 
-![Buyer Agent Preview](frontend/public/Buyer_Agent_Image.png)
-
 - 핵심 흐름: 사용자 조건 입력 -> Agent 분석 -> 상품/판매처 추천 -> 비교 분석
 
 ## Key Contributions
